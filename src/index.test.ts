@@ -62,28 +62,59 @@ describe("worker app", () => {
   });
 
   it("records a demo clock event after a consumed scan", async () => {
-    const token = await createDemoToken(`clock-${crypto.randomUUID()}`);
-    const scan = await app.request(`/scan?token=${encodeURIComponent(token)}`);
-    const html = await scan.text();
-    const attemptId = html.match(/name="attemptId" value="([^"]+)"/)?.[1];
+    const responseHtml = await recordDemoClockEvent();
 
-    expect(attemptId).toBeTruthy();
-
-    const form = new URLSearchParams({
-      token,
-      attemptId: attemptId ?? "",
-      employeeId: "demo-a",
-      eventType: "clock_in"
-    });
-    const response = await app.request("/api/clock", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: form
-    });
-    const responseHtml = await response.text();
-
-    expect(response.status).toBe(200);
     expect(responseHtml).toContain("출근 기록 완료");
     expect(responseHtml).toContain("직원 A");
   });
+
+  it("rejects csv export without the admin token", async () => {
+    const response = await app.request("/admin/demo/export.csv");
+
+    expect(response.status).toBe(401);
+    expect(await response.text()).toContain("관리자 인증이 필요합니다");
+  });
+
+  it("exports attendance records as a protected csv download", async () => {
+    await recordDemoClockEvent();
+
+    const response = await app.request(
+      "/admin/demo/export.csv",
+      { headers: { authorization: "Bearer export-token" } },
+      { ADMIN_EXPORT_TOKEN: "export-token" }
+    );
+    const csv = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/csv");
+    expect(response.headers.get("content-disposition")).toContain("attendance-demo-workspace");
+    expect(csv).toContain("기록시각,사업장,직원,유형,키오스크,위험표시");
+    expect(csv).toContain("직원 A");
+    expect(csv).toContain("출근");
+    expect(csv).not.toContain("qr_nonce_hash");
+  });
 });
+
+async function recordDemoClockEvent(): Promise<string> {
+  const token = await createDemoToken(`clock-${crypto.randomUUID()}`);
+  const scan = await app.request(`/scan?token=${encodeURIComponent(token)}`);
+  const html = await scan.text();
+  const attemptId = html.match(/name="attemptId" value="([^"]+)"/)?.[1];
+
+  expect(attemptId).toBeTruthy();
+
+  const form = new URLSearchParams({
+    token,
+    attemptId: attemptId ?? "",
+    employeeId: "demo-a",
+    eventType: "clock_in"
+  });
+  const response = await app.request("/api/clock", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form
+  });
+
+  expect(response.status).toBe(200);
+  return response.text();
+}

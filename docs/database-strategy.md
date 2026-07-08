@@ -2,7 +2,7 @@
 
 ## 결론
 
-출근도장의 기본 저장소는 **Cloudflare D1**이 맞다. 구글시트는 운영 데이터베이스가 아니라 **사장님용 보기/내보내기 화면**으로 붙이는 편이 좋다.
+출근도장의 기본 저장소는 **Cloudflare D1**이 맞다. 구글시트 연동은 제외하고, 사장님은 CSV 파일로 기록을 내려받는다.
 
 ## 왜 D1인가
 
@@ -12,7 +12,7 @@
 - 출퇴근 기록을 append-only 이벤트 로그로 쌓고, 정정은 별도 이벤트로 남기기 좋다.
 - 무료/저가 구간에서 시작하기 쉽고, 나중에 Postgres로 옮기기도 쉽다.
 
-## 구글시트가 애매한 이유
+## 구글시트를 제외하는 이유
 
 - 동시성 제어와 유일 제약이 약해서 큐알 전역 1회 소비 같은 보안 규칙을 맡기기 어렵다.
 - 시트 권한, 열 구조 변경, 수식, 사람이 직접 수정하는 문제 때문에 감사 로그 신뢰도가 떨어진다.
@@ -30,20 +30,21 @@
 ### P1 실제 베타
 
 - Cloudflare D1: 원장 데이터
-- Cloudflare R2: 월별 CSV/엑셀 내보내기 파일
-- 구글시트: 선택형 동기화 또는 수동 내보내기
+- 관리자 보호 CSV 다운로드: 즉시 내려받기
+- Cloudflare R2: 월별 CSV 백업 파일 후보
 
 ### P2 사업장 확장
 
 - D1 유지가 가능하면 계속 사용
 - 사업장 수와 조회량이 커지면 Neon/Supabase Postgres를 분석계 또는 주 저장소 후보로 검토
-- 원장 이벤트는 D1/Postgres에 두고, 구글시트는 보고용 복제본으로만 사용
+- 원장 이벤트는 D1/Postgres에 두고, 다운로드 파일은 CSV 또는 엑셀로 제공
 
 ## 현재 구현 상태
 
 - `schema.sql`과 `migrations/0001_initial.sql`에 D1 스키마를 둔다.
 - 원격 D1 생성은 Cloudflare 인증이 필요하다.
 - 인증 전 테스트 배포는 `wrangler.temp.jsonc`의 Durable Object 저장소로 동작한다.
+- `/admin/demo/export.csv`는 `ADMIN_EXPORT_TOKEN`이 있어야 CSV를 내려준다.
 
 ## 운영 명령
 
@@ -55,5 +56,6 @@ bunx wrangler d1 create chulgeun-dojang --location apac
 # 출력된 database_id를 wrangler.jsonc에 넣기
 bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0001_initial.sql
 bunx wrangler secret put QR_SECRET
+bunx wrangler secret put ADMIN_EXPORT_TOKEN
 bunx wrangler deploy
 ```

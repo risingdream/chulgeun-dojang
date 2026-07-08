@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { buildAttendanceCsv, type AttendanceExportRow } from "./domain/attendance-export";
 import { createQrToken, hashQrNonce, verifyQrToken, type QrClaims } from "./domain/qr-token";
 
 type Env = {
@@ -6,9 +7,10 @@ type Env = {
   STORE?: DurableObjectNamespace;
   APP_NAME?: string;
   QR_SECRET?: string;
+  ADMIN_EXPORT_TOKEN?: string;
 };
 
-type ClockEventType = "clock_in" | "clock_out";
+type ClockEventType = "clock_in" | "clock_out" | "break_start" | "break_end";
 
 type ConsumptionRecord = {
   qrNonceHash: string;
@@ -28,6 +30,9 @@ type AttendanceEventRecord = {
   kioskId: string;
   eventType: ClockEventType;
   occurredAt: string;
+  latitude?: number;
+  longitude?: number;
+  accuracyMeters?: number;
   riskFlags: string[];
 };
 
@@ -291,6 +296,24 @@ app.get("/events/demo", async (context) => {
   }));
 });
 
+app.get("/admin/demo/export.csv", async (context) => {
+  if (!isAdminAuthorized(context.req.header("authorization"), context.env)) {
+    return context.text("관리자 인증이 필요합니다", 401);
+  }
+
+  const rows = await listExportRows(context.env);
+  const csv = buildAttendanceCsv(rows);
+  const date = new Date().toISOString().slice(0, 10);
+
+  return new Response(csv, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="attendance-demo-workspace-${date}.csv"`,
+      "cache-control": "no-store"
+    }
+  });
+});
+
 async function ensureDemoSeed(env?: Env): Promise<void> {
   if (!env?.DB) return;
 
@@ -396,6 +419,9 @@ async function completeClockAttempt(
       kioskId: input.claims.kioskId,
       eventType: input.eventType,
       occurredAt,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      accuracyMeters: input.accuracyMeters,
       riskFlags
     });
     return { ok: true, employeeName: employee.name };
@@ -495,6 +521,59 @@ async function listRecentEvents(env?: Env): Promise<AttendanceEventRecord[]> {
   }));
 }
 
+async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
+  if (!env?.DB) {
+    const events = await listRecentEvents(env);
+    return events.slice().reverse().map((event) => ({
+      id: event.id,
+      workspaceName: "테스트 사업장",
+      employeeName: event.employeeName,
+      kioskName: "테스트 키오스크",
+      eventType: event.eventType,
+      occurredAt: event.occurredAt,
+      latitude: event.latitude,
+      longitude: event.longitude,
+      accuracyMeters: event.accuracyMeters,
+      riskFlags: event.riskFlags
+    }));
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT e.id, w.name AS workspace_name, emp.name AS employee_name, k.name AS kiosk_name,
+            e.event_type, e.occurred_at, e.latitude, e.longitude, e.accuracy_meters, e.risk_flags_json
+     FROM attendance_events e
+     JOIN workspaces w ON w.id = e.workspace_id
+     JOIN employees emp ON emp.id = e.employee_id
+     JOIN kiosks k ON k.id = e.kiosk_id
+     WHERE e.workspace_id = ?
+     ORDER BY e.occurred_at ASC`
+  ).bind(DEMO_WORKSPACE_ID).all<{
+    id: string;
+    workspace_name: string;
+    employee_name: string;
+    kiosk_name: string;
+    event_type: ClockEventType;
+    occurred_at: string;
+    latitude: number | null;
+    longitude: number | null;
+    accuracy_meters: number | null;
+    risk_flags_json: string;
+  }>();
+
+  return result.results.map((row) => ({
+    id: row.id,
+    workspaceName: row.workspace_name,
+    employeeName: row.employee_name,
+    kioskName: row.kiosk_name,
+    eventType: row.event_type,
+    occurredAt: row.occurred_at,
+    latitude: row.latitude ?? undefined,
+    longitude: row.longitude ?? undefined,
+    accuracyMeters: row.accuracy_meters ?? undefined,
+    riskFlags: JSON.parse(row.risk_flags_json) as string[]
+  }));
+}
+
 function renderEventList(events: AttendanceEventRecord[]): string {
   if (events.length === 0) {
     return `<section class="list-card"><h2>최근 기록</h2><p class="small">아직 기록이 없습니다.</p></section>`;
@@ -573,6 +652,24 @@ function messagePage(title: string, detail: string, href: string): string {
 
 function getQrSecret(env?: Env): string {
   return env?.QR_SECRET || LOCAL_SECRET;
+}
+
+function isAdminAuthorized(authorization: string | undefined, env?: Env): boolean {
+  const expectedToken = env?.ADMIN_EXPORT_TOKEN;
+  const prefix = "Bearer ";
+  if (!expectedToken || !authorization?.startsWith(prefix)) return false;
+
+  return timingSafeEqual(authorization.slice(prefix.length), expectedToken);
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return diff === 0;
 }
 
 function reasonToKorean(reason: string): string {
@@ -669,6 +766,9 @@ export class AttendanceStore {
           claims: QrClaims;
           employeeId: string;
           eventType: ClockEventType;
+          latitude?: number;
+          longitude?: number;
+          accuracyMeters?: number;
         };
         occurredAt: string;
         riskFlags: string[];
@@ -696,6 +796,9 @@ export class AttendanceStore {
         kioskId: body.input.claims.kioskId,
         eventType: body.input.eventType,
         occurredAt: body.occurredAt,
+        latitude: body.input.latitude,
+        longitude: body.input.longitude,
+        accuracyMeters: body.input.accuracyMeters,
         riskFlags: body.riskFlags
       });
       await this.state.storage.put({ [key]: record, events: events.slice(0, 50) });

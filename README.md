@@ -37,6 +37,16 @@ bun run typecheck
 bun run dev
 ```
 
+## 기록 내려받기
+
+관리자 토큰을 가진 요청만 CSV를 내려받을 수 있습니다.
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_EXPORT_TOKEN" \
+  https://<worker-domain>/admin/demo/export.csv \
+  -o attendance.csv
+```
+
 ## 배포
 
 ```bash
@@ -46,6 +56,7 @@ export PATH="/home/risingdream/.bun/bin:$PATH"
 bunx wrangler d1 create chulgeun-dojang --location apac
 bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0001_initial.sql
 bunx wrangler secret put QR_SECRET
+bunx wrangler secret put ADMIN_EXPORT_TOKEN
 bun run deploy
 
 # 인증 전 임시 테스트 배포
