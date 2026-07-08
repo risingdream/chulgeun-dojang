@@ -15,17 +15,11 @@ employees(id, workspace_id, name, employee_code_hash, phone_hash, status, create
 employee_credentials(id, employee_id, credential_id, public_key, device_name, user_agent_hash, created_at, revoked_at, last_seen_at)
 kiosks(id, workspace_id, name, public_key, status, created_at, last_seen_at)
 attendance_events(id, workspace_id, employee_id, kiosk_id, event_type, occurred_at, latitude, longitude, accuracy_meters, qr_nonce_hash, risk_flags_json, prev_hash, event_hash)
+qr_consumptions(qr_nonce_hash, workspace_id, kiosk_id, consumed_at, employee_id)
 correction_events(id, attendance_event_id, actor_id, reason, patch_json, created_at)
 ```
 
-## 중복 방지
-
-```sql
-CREATE UNIQUE INDEX attendance_employee_qr_once
-ON attendance_events(employee_id, event_type, qr_nonce_hash);
-```
-
-전역 1회 큐알 모드를 쓰면 아래 테이블을 추가한다.
+## 큐알 전역 1회 사용
 
 ```sql
 CREATE TABLE qr_consumptions(
@@ -36,3 +30,14 @@ CREATE TABLE qr_consumptions(
   employee_id TEXT NOT NULL
 );
 ```
+
+`qr_consumptions.qr_nonce_hash`가 전역 유일값이라서 한 큐알은 한 번만 성공할 수 있다. 성공한 출퇴근 요청은 `qr_consumptions` 삽입과 `attendance_events` 삽입을 같은 흐름에서 처리해야 한다.
+
+## 직원 중복 방지
+
+```sql
+CREATE UNIQUE INDEX attendance_employee_qr_once
+ON attendance_events(employee_id, event_type, qr_nonce_hash);
+```
+
+전역 1회 사용이 1차 방어이고, 직원별 유일값은 같은 직원의 중복 제출을 막는 2차 방어다.

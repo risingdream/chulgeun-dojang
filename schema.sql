@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS correction_events (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- 선택 기능: 전역 1회 큐알 모드에서만 사용한다.
+-- 큐알은 기본적으로 전역 1회 사용한다.
 CREATE TABLE IF NOT EXISTS qr_consumptions (
   qr_nonce_hash TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
@@ -88,3 +88,6 @@ CREATE TABLE IF NOT EXISTS qr_consumptions (
   consumed_at TEXT NOT NULL,
   employee_id TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS qr_consumptions_workspace_consumed_at
+ON qr_consumptions(workspace_id, consumed_at);
