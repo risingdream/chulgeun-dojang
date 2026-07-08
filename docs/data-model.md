@@ -15,7 +15,7 @@ employees(id, workspace_id, name, employee_code_hash, phone_hash, status, create
 employee_credentials(id, employee_id, credential_id, public_key, device_name, user_agent_hash, created_at, revoked_at, last_seen_at)
 kiosks(id, workspace_id, name, public_key, status, created_at, last_seen_at)
 attendance_events(id, workspace_id, employee_id, kiosk_id, event_type, occurred_at, latitude, longitude, accuracy_meters, qr_nonce_hash, risk_flags_json, prev_hash, event_hash)
-qr_consumptions(qr_nonce_hash, workspace_id, kiosk_id, consumed_at, employee_id)
+qr_consumptions(qr_nonce_hash, workspace_id, kiosk_id, attempt_id, consumed_at, completed_employee_id, completed_at)
 correction_events(id, attendance_event_id, actor_id, reason, patch_json, created_at)
 ```
 
@@ -26,12 +26,14 @@ CREATE TABLE qr_consumptions(
   qr_nonce_hash TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
   kiosk_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL UNIQUE,
   consumed_at TEXT NOT NULL,
-  employee_id TEXT NOT NULL
+  completed_employee_id TEXT,
+  completed_at TEXT
 );
 ```
 
-`qr_consumptions.qr_nonce_hash`가 전역 유일값이라서 한 큐알은 한 번만 성공할 수 있다. 성공한 출퇴근 요청은 `qr_consumptions` 삽입과 `attendance_events` 삽입을 같은 흐름에서 처리해야 한다.
+`qr_consumptions.qr_nonce_hash`가 전역 유일값이라서 한 큐알은 한 번만 소비할 수 있다. 첫 스캔 요청이 `qr_consumptions`를 만들고 `attempt_id`를 받는다. 이후 패스키 검증이 성공하면 `attendance_events`를 만들고 `completed_employee_id`, `completed_at`을 채운다.
 
 ## 직원 중복 방지
 

@@ -14,7 +14,7 @@ class MemoryQrConsumptionStore implements QrConsumptionStore {
 }
 
 describe("qr replay policy", () => {
-  it("allows the first employee to consume a qr nonce", async () => {
+  it("allows the first scan to consume a qr nonce", async () => {
     const store = new MemoryQrConsumptionStore();
 
     const result = await consumeQrOnce(store, "qr_hash_1");
@@ -22,7 +22,7 @@ describe("qr replay policy", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it("rejects another employee using the same qr nonce", async () => {
+  it("rejects another scan using the same qr nonce", async () => {
     const store = new MemoryQrConsumptionStore();
     await consumeQrOnce(store, "qr_hash_1");
 

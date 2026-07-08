@@ -85,8 +85,10 @@ CREATE TABLE IF NOT EXISTS qr_consumptions (
   qr_nonce_hash TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
   kiosk_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL UNIQUE,
   consumed_at TEXT NOT NULL,
-  employee_id TEXT NOT NULL
+  completed_employee_id TEXT REFERENCES employees(id),
+  completed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS qr_consumptions_workspace_consumed_at
