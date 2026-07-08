@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chulgeun-dojang-temp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-08",
+  "vars": {
+    "APP_NAME": "출근도장"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STORE",
+        "class_name": "AttendanceStore"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AttendanceStore"]
+    }
+  ]
+}

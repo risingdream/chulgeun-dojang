@@ -20,6 +20,14 @@
 - 큐알이 스캔되거나 사용 실패가 발생하면 키오스크는 즉시 새 큐알을 받아 표시합니다.
 - 여러 직원이 동시에 출근할 때는 같은 큐알을 나눠 쓰지 않고, 키오스크가 빠르게 다음 큐알을 보여주는 방식으로 처리합니다.
 
+## 문서
+
+- [제품 명세](docs/product-spec.md)
+- [보안 모델](docs/security-model.md)
+- [데이터 모델](docs/data-model.md)
+- [데이터베이스 전략](docs/database-strategy.md)
+- [편의성 스윗스팟 리서치](docs/attendance-sweet-spot-research.md)
+
 ## 개발
 
 ```bash
@@ -32,9 +40,16 @@ bun run dev
 ## 배포
 
 ```bash
-wrangler d1 create chulgeun-dojang
-wrangler d1 execute chulgeun-dojang --file=./schema.sql
+export PATH="/home/risingdream/.bun/bin:$PATH"
+
+# 실제 운영 배포: Cloudflare 로그인 또는 CLOUDFLARE_API_TOKEN 필요
+bunx wrangler d1 create chulgeun-dojang --location apac
+bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0001_initial.sql
+bunx wrangler secret put QR_SECRET
 bun run deploy
+
+# 인증 전 임시 테스트 배포
+bunx wrangler deploy --temporary --config wrangler.temp.jsonc
 ```
 
 ## 라이선스
