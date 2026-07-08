@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chulgeun-dojang",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-08",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "chulgeun-dojang",
+      "database_id": "replace-with-d1-database-id"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "출근도장"
+  }
+}
