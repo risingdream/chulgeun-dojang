@@ -58,6 +58,10 @@ const QR_TTL_SECONDS = 60;
 const LOCAL_SECRET = "local-dev-secret";
 const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
 const REMEMBERED_EMPLOYEE_MAX_AGE = 60 * 60 * 24 * 365;
+const WORKSPACE_TOKEN_COOKIE = "workspaceToken";
+const WORKSPACE_TOKEN_SECONDS = 60 * 60 * 24 * 365;
+const KIOSK_SESSION_COOKIE = "kioskSession";
+const KIOSK_SESSION_SECONDS = 60 * 60 * 24;
 const ADMIN_SESSION_COOKIE = "adminSession";
 const ADMIN_SESSION_SECONDS = 60;
 const seedEmployees = [
@@ -140,7 +144,14 @@ app.get("/start", (context) => {
 app.get("/setup", async (context) => {
   const ownerPinHash = await getOwnerPinHash(context.env);
   if (ownerPinHash) {
-    return context.html(messagePage("이미 setup이 끝났습니다", "사장님 PIN은 사업장 설정에 저장되어 있습니다.", "/kiosk"));
+    const workspaceId = await getLocalWorkspaceId(context.req.header("cookie"), context.env);
+    if (workspaceId) return context.redirect("/kiosk/login", 302);
+
+    const display = await getWorkspaceDisplay(context.env);
+    return context.html(layout({
+      title: "사업장 연결",
+      body: renderSetupPage({ mode: "connect", businessName: display.workspaceName })
+    }));
   }
 
   return context.html(layout({ title: "사업자 setup", body: renderSetupPage() }));
@@ -148,14 +159,33 @@ app.get("/setup", async (context) => {
 
 app.post("/setup", async (context) => {
   const body = await context.req.parseBody();
+  const existingOwnerPinHash = await getOwnerPinHash(context.env);
   const businessName = stringField(body.businessName).trim() || DEFAULT_WORKSPACE_DISPLAY_NAME;
   const ownerPin = stringField(body.ownerPin).trim();
 
   if (!/^\d{4}$/.test(ownerPin)) {
     return context.html(layout({
-      title: "사업자 setup",
-      body: renderSetupPage({ errorMessage: "사장님 PIN은 숫자 4자리로 설정해주세요", businessName })
+      title: existingOwnerPinHash ? "사업장 연결" : "사업자 setup",
+      body: renderSetupPage({
+        mode: existingOwnerPinHash ? "connect" : "create",
+        errorMessage: "사장님 PIN은 숫자 4자리로 입력해주세요",
+        businessName
+      })
     }), 400);
+  }
+
+  if (existingOwnerPinHash) {
+    const submittedHash = await hashOwnerPin(ownerPin, DEFAULT_WORKSPACE_ID, context.env);
+    if (!timingSafeEqual(submittedHash, existingOwnerPinHash)) {
+      const display = await getWorkspaceDisplay(context.env);
+      return context.html(layout({
+        title: "사업장 연결",
+        body: renderSetupPage({ mode: "connect", errorMessage: "PIN이 맞지 않습니다", businessName: display.workspaceName })
+      }), 401);
+    }
+
+    context.header("Set-Cookie", await buildWorkspaceTokenCookie(DEFAULT_WORKSPACE_ID, context.env, context.req.url));
+    return context.redirect("/kiosk/login", 302);
   }
 
   await saveWorkspaceSetup(context.env, {
@@ -163,15 +193,64 @@ app.post("/setup", async (context) => {
     businessName,
     ownerPinHash: await hashOwnerPin(ownerPin, DEFAULT_WORKSPACE_ID, context.env)
   });
-  return context.redirect("/kiosk", 302);
+  context.header("Set-Cookie", await buildWorkspaceTokenCookie(DEFAULT_WORKSPACE_ID, context.env, context.req.url));
+  return context.redirect("/kiosk/login", 302);
 });
 
 app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
 
+app.get("/kiosk/login", async (context) => {
+  await ensureDefaultSeed(context.env);
+  const ownerPinHash = await getOwnerPinHash(context.env);
+  if (!ownerPinHash) return context.redirect("/setup", 302);
+
+  const workspaceId = await getLocalWorkspaceId(context.req.header("cookie"), context.env);
+  if (context.env?.DB && !workspaceId) return context.redirect("/setup", 302);
+  const resolvedWorkspaceId = workspaceId ?? DEFAULT_WORKSPACE_ID;
+
+  if (await isValidKioskSession(context.req.header("cookie"), resolvedWorkspaceId, context.env)) {
+    return context.redirect("/kiosk", 302);
+  }
+
+  const display = await getWorkspaceDisplay(context.env, resolvedWorkspaceId);
+  return context.html(layout({ title: "키오스크 로그인", body: renderKioskLoginPage({ workspaceName: display.workspaceName }) }));
+});
+
+app.post("/kiosk/login", async (context) => {
+  await ensureDefaultSeed(context.env);
+  const ownerPinHash = await getOwnerPinHash(context.env);
+  if (!ownerPinHash) return context.redirect("/setup", 302);
+
+  const workspaceId = await getLocalWorkspaceId(context.req.header("cookie"), context.env);
+  if (context.env?.DB && !workspaceId) return context.redirect("/setup", 302);
+  const resolvedWorkspaceId = workspaceId ?? DEFAULT_WORKSPACE_ID;
+
+  const display = await getWorkspaceDisplay(context.env, resolvedWorkspaceId);
+  const body = await context.req.parseBody();
+  const pin = stringField(body.pin).trim();
+  const submittedHash = await hashOwnerPin(pin, resolvedWorkspaceId, context.env);
+  if (!timingSafeEqual(submittedHash, ownerPinHash)) {
+    return context.html(layout({
+      title: "키오스크 로그인",
+      body: renderKioskLoginPage({ workspaceName: display.workspaceName, errorMessage: "PIN이 맞지 않습니다" })
+    }), 401);
+  }
+
+  context.header("Set-Cookie", await buildKioskSessionCookie(resolvedWorkspaceId, context.env, context.req.url));
+  return context.redirect("/kiosk", 302);
+});
+
 app.get("/kiosk", async (context) => {
   await ensureDefaultSeed(context.env);
-  if (context.env?.DB && !(await getOwnerPinHash(context.env))) {
-    return context.redirect("/setup", 302);
+  if (context.env?.DB) {
+    if (!(await getOwnerPinHash(context.env))) {
+      return context.redirect("/setup", 302);
+    }
+    const workspaceId = await getLocalWorkspaceId(context.req.header("cookie"), context.env);
+    if (!workspaceId) return context.redirect("/setup", 302);
+    if (!(await isValidKioskSession(context.req.header("cookie"), workspaceId, context.env))) {
+      return context.redirect("/kiosk/login", 302);
+    }
   }
   const display = await getWorkspaceDisplay(context.env);
 
@@ -1115,29 +1194,82 @@ function formatCurrentKoreanDate(): string {
   }).format(new Date());
 }
 
-function renderSetupPage(options: { errorMessage?: string; businessName?: string } = {}): string {
+function renderSetupPage(options: { errorMessage?: string; businessName?: string; mode?: "create" | "connect" } = {}): string {
+  const mode = options.mode ?? "create";
+  const isConnect = mode === "connect";
   const errorBlock = options.errorMessage
     ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800">${escapeHtml(options.errorMessage)}</div>`
     : "";
+  const businessNameBlock = isConnect
+    ? `<div style="background:#FFFDF8;border:1px solid #E8E1D3;border-radius:14px;padding:14px;color:#22262B;font-size:15px;font-weight:800">${escapeHtml(options.businessName || DEFAULT_WORKSPACE_DISPLAY_NAME)}</div>`
+    : `<label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
+          사업장 이름
+          <input name="businessName" value="${escapeHtml(options.businessName ?? "")}" placeholder="예: 우리 매장" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+        </label>`;
 
   return `
     <section data-screen-label="A0 사업자 setup" class="surface-card" style="max-width:520px">
-      <div class="brand-row">${brandMark()}<span class="pill green">처음 설정</span></div>
-      <h1 style="margin:24px 0 0;font-size:34px;line-height:1.12;letter-spacing:-0.045em;color:#171717">사업장 setup</h1>
-      <p style="margin:12px 0 22px;color:#6E6A61;line-height:1.6">사장님 PIN은 고객 사업장 설정에 저장됩니다. 운영 환경 변수로 받지 않습니다.</p>
+      <div class="brand-row">${brandMark()}<span class="pill green">${isConnect ? "기기 연결" : "처음 설정"}</span></div>
+      <h1 style="margin:24px 0 0;font-size:34px;line-height:1.12;letter-spacing:-0.045em;color:#171717">${isConnect ? "이 기기 연결" : "사업장 setup"}</h1>
+      <p style="margin:12px 0 22px;color:#6E6A61;line-height:1.6">${isConnect ? "이 브라우저에 사업장 토큰을 저장한 뒤, PIN 로그인으로 키오스크를 엽니다." : "사장님 PIN은 고객 사업장 설정에 저장됩니다. 운영 환경 변수로 받지 않습니다."}</p>
       <form method="post" action="/setup" style="display:grid;gap:14px">
         ${errorBlock}
-        <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
-          사업장 이름
-          <input name="businessName" value="${escapeHtml(options.businessName ?? "")}" placeholder="예: 우리 매장" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
-        </label>
+        ${businessNameBlock}
         <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
           사장님 PIN 4자리
-          <input name="ownerPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="new-password" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+          <input name="ownerPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="${isConnect ? "current-password" : "new-password"}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
         </label>
-        <button class="button primary" type="submit" style="width:100%;border:0;margin-top:6px">setup 완료</button>
+        <button class="button primary" type="submit" style="width:100%;border:0;margin-top:6px">${isConnect ? "이 기기 연결" : "setup 완료"}</button>
       </form>
     </section>
+  `;
+}
+
+function renderKioskLoginPage(options: { workspaceName: string; errorMessage?: string }): string {
+  const errorBlock = options.errorMessage
+    ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800;margin-top:8px">${escapeHtml(options.errorMessage)}</div>`
+    : "";
+  const keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "←"].map((key) => {
+    if (!key) return `<span style="height:56px"></span>`;
+    return `<button type="button" data-pin-key="${key}" style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:14px;height:56px;display:grid;place-items:center;font-size:${key === "←" ? "17" : "21"}px;font-weight:700;color:${key === "←" ? "#6E6A61" : "#22262B"}">${key}</button>`;
+  }).join("");
+
+  return `
+    <div data-screen-label="A5 키오스크 로그인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
+        <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
+        <span style="font-size:16px;font-weight:800">출근도장</span>
+        <span style="width:1px;height:16px;background:#E0D8C6"></span>
+        <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(options.workspaceName)}</span>
+        <span style="font-size:12px;font-weight:600;color:#6E6A61;border:1px solid #E0D8C6;border-radius:999px;padding:4px 10px">키오스크 로그인</span>
+        <span style="flex:1"></span>
+        <a href="/setup" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">사업장 변경</a>
+      </div>
+      <div style="flex:1;display:grid;place-items:center">
+        <form method="post" action="/kiosk/login" data-pin-form style="display:flex;flex-direction:column;align-items:center;gap:8px">
+          <div style="width:60px;height:60px;border-radius:50%;background:#F1EBDD;display:grid;place-items:center;color:#8A6D2F;font-size:28px;font-weight:900">잠</div>
+          <div style="font-size:24px;font-weight:800;margin-top:6px;color:#17191C">키오스크 로그인</div>
+          <div style="font-size:14.5px;color:#6E6A61">이 브라우저에 사업장 토큰이 있습니다. PIN으로 열어주세요.</div>
+          ${errorBlock}
+          <input data-pin-input name="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="4" style="position:absolute;opacity:0;width:1px;height:1px;pointer-events:none" />
+          <div data-pin-dots style="display:flex;gap:14px;margin-top:10px">
+            <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+            <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+            <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+            <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,76px);gap:10px;justify-content:center;margin-top:14px">
+            ${keypad}
+          </div>
+          <button type="submit" data-pin-submit hidden>열기</button>
+        </form>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:16px;padding:14px 28px;border-top:1px solid #E8E1D3;font-size:13px;color:#8A8478;background:#FFFDF8">
+        <span>공용 키오스크 기기는 하루에 한 번 PIN 로그인이 필요합니다</span>
+        <span>토큰이 없으면 setup으로 돌아갑니다</span>
+      </div>
+      ${renderPinKeypadScript()}
+    </div>
   `;
 }
 
@@ -1220,6 +1352,47 @@ function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
             })();
           </script>
     </div>
+  `;
+}
+
+function renderPinKeypadScript(): string {
+  return `
+    <script>
+      (() => {
+        const form = document.querySelector('[data-pin-form]');
+        const input = document.querySelector('[data-pin-input]');
+        const dots = Array.from(document.querySelectorAll('[data-pin-dot]'));
+        if (!form || !input) return;
+        function renderDots() {
+          dots.forEach((dot, index) => {
+            dot.style.background = index < input.value.length ? '#C13A2A' : 'transparent';
+            dot.style.borderColor = index < input.value.length ? '#C13A2A' : '#C8C2B4';
+          });
+        }
+        function pressKey(key) {
+          if (key === '←') input.value = input.value.slice(0, -1);
+          else if (/^[0-9]$/.test(key) && input.value.length < 4) input.value += key;
+          renderDots();
+          if (input.value.length === 4) {
+            if (form.requestSubmit) form.requestSubmit();
+            else form.submit();
+          }
+        }
+        form.addEventListener('click', (event) => {
+          const target = event.target;
+          const button = target && target.closest ? target.closest('[data-pin-key]') : null;
+          if (!button) return;
+          pressKey(button.getAttribute('data-pin-key'));
+        });
+        document.addEventListener('keydown', (event) => {
+          if (/^[0-9]$/.test(event.key) || event.key === 'Backspace') {
+            event.preventDefault();
+            pressKey(event.key === 'Backspace' ? '←' : event.key);
+          }
+        });
+        renderDots();
+      })();
+    </script>
   `;
 }
 
@@ -1446,6 +1619,71 @@ function clearRememberCookie(requestUrl: string): string {
     isHttpsUrl(requestUrl) ? "Secure" : "",
     "HttpOnly"
   ].filter(Boolean).join("; ");
+}
+
+async function buildWorkspaceTokenCookie(workspaceId: string, env: Env | undefined, requestUrl: string): Promise<string> {
+  const token = `${workspaceId}.${await signWorkspaceToken(workspaceId, env)}`;
+  return [
+    `${WORKSPACE_TOKEN_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    `Max-Age=${WORKSPACE_TOKEN_SECONDS}`,
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+async function getLocalWorkspaceId(cookieHeader: string | undefined, env?: Env): Promise<string | undefined> {
+  const rawToken = getCookieValue(cookieHeader, WORKSPACE_TOKEN_COOKIE);
+  if (!rawToken) return undefined;
+
+  const [workspaceId, signature] = safeDecodeURIComponent(rawToken).split(".");
+  if (!workspaceId || !signature) return undefined;
+
+  const expected = await signWorkspaceToken(workspaceId, env);
+  return timingSafeEqual(signature, expected) ? workspaceId : undefined;
+}
+
+async function signWorkspaceToken(workspaceId: string, env?: Env): Promise<string> {
+  return sha256Hex(`workspace-token.${workspaceId}.${getQrSecret(env)}`);
+}
+
+async function buildKioskSessionCookie(workspaceId: string, env: Env | undefined, requestUrl: string): Promise<string> {
+  const expiresAt = Math.floor(Date.now() / 1000) + KIOSK_SESSION_SECONDS;
+  const signature = await signKioskSession(workspaceId, expiresAt, env);
+  return [
+    `${KIOSK_SESSION_COOKIE}=${encodeURIComponent(`${workspaceId}.${expiresAt}.${signature}`)}`,
+    "Path=/kiosk",
+    `Max-Age=${KIOSK_SESSION_SECONDS}`,
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+async function isValidKioskSession(cookieHeader: string | undefined, workspaceId: string, env?: Env): Promise<boolean> {
+  const rawSession = getCookieValue(cookieHeader, KIOSK_SESSION_COOKIE);
+  if (!rawSession) return false;
+
+  const [sessionWorkspaceId, expiresAtText, signature] = safeDecodeURIComponent(rawSession).split(".");
+  const expiresAt = Number(expiresAtText);
+  if (sessionWorkspaceId !== workspaceId || !Number.isFinite(expiresAt) || !signature) return false;
+  if (expiresAt < Math.floor(Date.now() / 1000)) return false;
+
+  const expected = await signKioskSession(workspaceId, expiresAt, env);
+  return timingSafeEqual(signature, expected);
+}
+
+async function signKioskSession(workspaceId: string, expiresAt: number, env?: Env): Promise<string> {
+  return sha256Hex(`kiosk-session.${workspaceId}.${expiresAt}.${getAdminSessionSecret(env)}`);
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return "";
+  }
 }
 
 async function buildAdminSessionCookie(env: Env | undefined, requestUrl: string): Promise<string> {

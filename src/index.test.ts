@@ -45,6 +45,72 @@ describe("worker app", () => {
     expect(response.headers.get("location")).toBe("/setup");
   });
 
+  it("redirects the kiosk to setup when this browser has no local workspace token", async () => {
+    const response = await app.request("/kiosk", {}, { DB: fakeD1({ ownerPinHash: "configured-pin-hash", workspaceName: "심플랩스" }) });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+  });
+
+  it("binds a local workspace token through setup, then requires kiosk login before showing the kiosk", async () => {
+    const db = fakeD1();
+    const env = { DB: db };
+
+    const setup = await app.request("/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ businessName: "심플랩스", ownerPin: "1234" })
+    }, env);
+    const workspaceCookie = setup.headers.get("set-cookie") ?? "";
+
+    expect(setup.status).toBe(302);
+    expect(setup.headers.get("location")).toBe("/kiosk/login");
+    expect(workspaceCookie).toContain("workspaceToken=");
+    expect(workspaceCookie).toContain("HttpOnly");
+
+    const kioskWithoutLogin = await app.request("/kiosk", { headers: { cookie: workspaceCookie } }, env);
+    expect(kioskWithoutLogin.status).toBe(302);
+    expect(kioskWithoutLogin.headers.get("location")).toBe("/kiosk/login");
+
+    const loginPage = await app.request("/kiosk/login", { headers: { cookie: workspaceCookie } }, env);
+    const loginHtml = await loginPage.text();
+
+    expect(loginPage.status).toBe(200);
+    expect(loginHtml).toContain('data-screen-label="A5 키오스크 로그인 PIN"');
+    expect(loginHtml).toContain('method="post" action="/kiosk/login"');
+    expect(loginHtml).toContain("심플랩스");
+
+    const wrongLogin = await app.request("/kiosk/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: workspaceCookie },
+      body: new URLSearchParams({ pin: "0000" })
+    }, env);
+    const wrongLoginHtml = await wrongLogin.text();
+
+    expect(wrongLogin.status).toBe(401);
+    expect(wrongLoginHtml).toContain("PIN이 맞지 않습니다");
+    expect(wrongLogin.headers.get("set-cookie") ?? "").not.toContain("kioskSession=");
+
+    const login = await app.request("/kiosk/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: workspaceCookie },
+      body: new URLSearchParams({ pin: "1234" })
+    }, env);
+    const kioskCookie = login.headers.get("set-cookie") ?? "";
+
+    expect(login.status).toBe(302);
+    expect(login.headers.get("location")).toBe("/kiosk");
+    expect(kioskCookie).toContain("kioskSession=");
+    expect(kioskCookie).toContain("HttpOnly");
+
+    const kiosk = await app.request("/kiosk", { headers: { cookie: `${workspaceCookie}; ${kioskCookie}` } }, env);
+    const kioskHtml = await kiosk.text();
+
+    expect(kiosk.status).toBe(200);
+    expect(kioskHtml).toContain('data-screen-label="A1 키오스크 태블릿 정상"');
+    expect(kioskHtml).toContain("심플랩스");
+  });
+
   it("renders the kiosk from the provided A1 screen, with a scan link but no public recent records", async () => {
     await recordClockEvent();
 
@@ -197,9 +263,21 @@ describe("worker app", () => {
     });
 
     expect(setup.status).toBe(302);
-    expect(setup.headers.get("location")).toBe("/kiosk");
+    expect(setup.headers.get("location")).toBe("/kiosk/login");
+    expect(setup.headers.get("set-cookie")).toContain("workspaceToken=");
 
-    const kioskAfterSetup = await app.request("/kiosk");
+    const unlockKiosk = await app.request("/kiosk/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: setup.headers.get("set-cookie") ?? "" },
+      body: new URLSearchParams({ pin: "1234" })
+    });
+
+    expect(unlockKiosk.status).toBe(302);
+    expect(unlockKiosk.headers.get("location")).toBe("/kiosk");
+
+    const kioskAfterSetup = await app.request("/kiosk", {
+      headers: { cookie: `${setup.headers.get("set-cookie") ?? ""}; ${unlockKiosk.headers.get("set-cookie") ?? ""}` }
+    });
     const kioskAfterSetupHtml = await kioskAfterSetup.text();
 
     expect(kioskAfterSetup.status).toBe(200);
@@ -316,6 +394,43 @@ function d1WithoutOwnerSetup(): D1Database {
           : null,
         all: async () => ({ results: [] }),
         run: async () => ({ success: true })
+      })
+    })
+  } as unknown as D1Database;
+}
+
+function fakeD1(initial: { workspaceName?: string; ownerPinHash?: string | null; kioskName?: string } = {}): D1Database {
+  const state = {
+    workspaceName: initial.workspaceName ?? "운영 사업장",
+    ownerPinHash: initial.ownerPinHash ?? null,
+    kioskName: initial.kioskName ?? "입구 키오스크"
+  };
+
+  return {
+    batch: async () => [],
+    prepare: (query: string) => ({
+      bind: (...args: unknown[]) => ({
+        first: async () => {
+          if (query.includes("SELECT owner_pin_hash FROM workspaces")) {
+            return { owner_pin_hash: state.ownerPinHash };
+          }
+          if (query.includes("SELECT w.name AS workspace_name")) {
+            return {
+              workspace_name: state.workspaceName,
+              owner_pin_hash: state.ownerPinHash,
+              kiosk_name: state.kioskName
+            };
+          }
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (query.includes("INSERT INTO workspaces")) {
+            state.workspaceName = String(args[1] ?? state.workspaceName);
+            state.ownerPinHash = typeof args[6] === "string" ? args[6] : state.ownerPinHash;
+          }
+          return { success: true };
+        }
       })
     })
   } as unknown as D1Database;
