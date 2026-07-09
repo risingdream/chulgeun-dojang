@@ -36,6 +36,7 @@ describe("worker app", () => {
     expect(html).toContain("앱 설치 없는");
     expect(html).toContain("/start");
     expect(html).toContain("/kiosk");
+    expect(html).not.toContain("cdn.jsdelivr.net");
   });
 
   it("redirects the kiosk to setup when the D1 workspace is not configured", async () => {
@@ -50,6 +51,20 @@ describe("worker app", () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/setup");
+  });
+
+  it("does not run default D1 seed writes on every kiosk request", async () => {
+    let batchCalls = 0;
+    const db = withBatchCounter(
+      fakeD1({ ownerPinHash: "configured-pin-hash", workspaceName: "심플랩스" }),
+      () => { batchCalls += 1; }
+    );
+
+    const response = await app.request("/kiosk", {}, { DB: db });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+    expect(batchCalls).toBe(0);
   });
 
   it("binds a local workspace token through setup, then requires kiosk login before showing the kiosk", async () => {
@@ -121,6 +136,8 @@ describe("worker app", () => {
     expect(response.status).toBe(200);
     expect(html).toContain('data-screen-label="A1 키오스크 태블릿 정상"');
     expect(html).toContain("/scan?token=");
+    expect(html).not.toContain("api.qrserver.com");
+    expect(html).not.toContain('<img src="https://');
     expect(html).toContain("새 큐알까지 60초");
     expect(html).toContain("사업장");
     expect(html).not.toContain("카페 소소");
@@ -535,6 +552,9 @@ describe("worker app", () => {
     expect(unlockedHtml).toContain("오늘 기록");
     expect(unlockedHtml).toContain("CSV 내려받기");
     expect(unlockedHtml).toContain("김민지");
+    expect(unlockedHtml).not.toContain(">QR<");
+    expect(unlockedHtml).not.toContain("큐알 유지 중");
+    expect(unlockedHtml).not.toContain("60초 후 자동 잠금");
 
     const csv = await app.request("/admin/export.csv", { headers: { cookie } }, env);
     expect(csv.status).toBe(200);
@@ -606,6 +626,16 @@ function d1WithoutOwnerSetup(): D1Database {
       })
     })
   } as unknown as D1Database;
+}
+
+function withBatchCounter(db: D1Database, onBatch: () => void): D1Database {
+  return {
+    ...db,
+    batch: async (statements: D1PreparedStatement[]) => {
+      onBatch();
+      return db.batch(statements);
+    }
+  } as D1Database;
 }
 
 function fakeD1(initial: {

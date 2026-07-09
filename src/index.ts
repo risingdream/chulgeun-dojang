@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import QRCode from "qrcode-svg";
 import { buildAttendanceCsv, type AttendanceExportRow } from "./domain/attendance-export";
 import { createQrToken, hashQrNonce, verifyQrToken, type QrClaims } from "./domain/qr-token";
 
@@ -216,7 +217,6 @@ app.post("/setup", async (context) => {
 app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
 
 app.get("/kiosk/login", async (context) => {
-  await ensureDefaultSeed(context.env);
   const ownerPinHash = await getOwnerPinHash(context.env);
   if (!ownerPinHash) return context.redirect("/setup", 302);
 
@@ -233,7 +233,6 @@ app.get("/kiosk/login", async (context) => {
 });
 
 app.post("/kiosk/login", async (context) => {
-  await ensureDefaultSeed(context.env);
   const ownerPinHash = await getOwnerPinHash(context.env);
   if (!ownerPinHash) return context.redirect("/setup", 302);
 
@@ -257,7 +256,6 @@ app.post("/kiosk/login", async (context) => {
 });
 
 app.get("/kiosk", async (context) => {
-  await ensureDefaultSeed(context.env);
   if (context.env?.DB) {
     if (!(await getOwnerPinHash(context.env))) {
       return context.redirect("/setup", 302);
@@ -312,8 +310,6 @@ app.get("/kiosk", async (context) => {
 });
 
 app.get("/scan", async (context) => {
-  await ensureDefaultSeed(context.env);
-
   const token = context.req.query("token") ?? "";
   const verified = await verifyQrToken(token, getQrSecret(context.env), Math.floor(Date.now() / 1000));
   if (!verified.ok) {
@@ -349,8 +345,6 @@ app.get("/scan", async (context) => {
 });
 
 app.post("/api/clock", async (context) => {
-  await ensureDefaultSeed(context.env);
-
   const body = await context.req.parseBody();
   const token = stringField(body.token);
   const attemptId = stringField(body.attemptId);
@@ -444,13 +438,18 @@ app.get("/events", async (context) => {
 });
 
 app.get("/admin/today", async (context) => {
-  const display = await getWorkspaceDisplay(context.env);
-  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+  const [display, authorized] = await Promise.all([
+    getWorkspaceDisplay(context.env),
+    isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie"))
+  ]);
+  if (!authorized) {
     return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
   }
 
-  const events = await listRecentEvents(context.env);
-  const employees = await listRegisteredEmployees(context.env);
+  const [events, employees] = await Promise.all([
+    listRecentEvents(context.env),
+    listRegisteredEmployees(context.env)
+  ]);
   const clockIns = events.filter((event) => event.eventType === "clock_in").length;
   const clockOuts = events.filter((event) => event.eventType === "clock_out").length;
   const flagged = events.filter((event) => event.riskFlags.length > 0).length;
@@ -587,19 +586,6 @@ app.get("/admin/export.csv", async (context) => {
     }
   });
 });
-
-async function ensureDefaultSeed(env?: Env): Promise<void> {
-  if (!env?.DB) return;
-
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash, owner_pin_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(DEFAULT_WORKSPACE_ID, "운영 사업장", 37.5133, 127.1002, 80, "owner", null),
-    env.DB.prepare(`INSERT OR IGNORE INTO kiosks (id, workspace_id, name, status) VALUES (?, ?, ?, ?)`)
-      .bind(DEFAULT_KIOSK_ID, DEFAULT_WORKSPACE_ID, "입구 키오스크", "active")
-  ]);
-}
 
 async function saveWorkspaceSetup(
   env: Env | undefined,
@@ -1046,7 +1032,7 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
 function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskName: string }): string {
   const nowTime = formatCurrentClockTime();
   const today = formatCurrentKoreanDate();
-  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${encodeURIComponent(input.scanUrl)}`;
+  const qrSvg = renderQrSvg(input.scanUrl);
 
   return `
     <div data-kiosk-screen data-screen-label="A1 키오스크 태블릿 정상" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
@@ -1071,7 +1057,7 @@ function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskN
             </div>
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
               <div style="position:relative;background:#FFFFFF;border:1px solid #E8E1D3;border-radius:24px;padding:18px;box-shadow:0 14px 30px rgba(52,38,18,0.10)">
-                <img src="${qrImageUrl}" alt="출근도장 큐알" style="width:330px;height:330px;display:block" />
+                ${qrSvg}
                 <svg width="58" height="58" viewBox="0 0 58 58" style="position:absolute;right:-14px;top:-14px;filter:drop-shadow(0 6px 14px rgba(0,0,0,.18))">
                   <circle cx="29" cy="29" r="23" fill="#FFFDF8" stroke="#E8E1D3" stroke-width="6"></circle>
                   <circle data-countdown-ring cx="29" cy="29" r="23" fill="none" stroke="#C13A2A" stroke-width="6" stroke-linecap="round" stroke-dasharray="144.51" stroke-dashoffset="0" transform="rotate(-90 29 29)"></circle>
@@ -1091,6 +1077,26 @@ function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskN
       ${renderKioskScript()}
     </div>
   `;
+}
+
+function renderQrSvg(content: string): string {
+  const svg = new QRCode({
+    content,
+    padding: 4,
+    width: 330,
+    height: 330,
+    color: "#17191C",
+    background: "#FFFFFF",
+    ecl: "M",
+    join: true,
+    pretty: false,
+    xmlDeclaration: false
+  }).svg();
+
+  return svg.replace(
+    "<svg ",
+    '<svg role="img" aria-label="출근도장 큐알" style="width:330px;height:330px;display:block" '
+  );
 }
 
 
@@ -1741,11 +1747,6 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], employees: Employ
             <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(workspaceName)}</span>
             <span style="background:#C13A2A;color:#FFFFFF;font-size:12px;font-weight:700;padding:5px 11px;border-radius:999px">사장님 열람 중</span>
             <span style="flex:1"></span>
-            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-              <div style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:8px;padding:3px;width:50px;height:50px;display:grid;place-items:center;color:#C13A2A;font-size:10px;font-weight:900">QR</div>
-              <span style="font-size:10px;color:#8A8478">큐알 유지 중</span>
-            </div>
-            <span style="font-size:12.5px;font-weight:700;color:#6E6A61">60초 후 자동 잠금</span>
             <a href="/admin/employees" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">직원 관리</a>
             <a href="/admin/export.csv" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#C13A2A;color:#FFFFFF;text-decoration:none">CSV 내려받기</a>
             <a href="/admin/lock" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
@@ -1926,9 +1927,8 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(input.title)} · 출근도장</title>
     ${input.refreshSeconds ? `<meta http-equiv="refresh" content="${input.refreshSeconds}" />` : ""}
-    <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.css" />
     <style>
-      :root { color-scheme: light; font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; background: #E9EAEE; color: #22262B; }
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; background: #E9EAEE; color: #22262B; }
       html { width: 100%; min-height: 100%; margin: 0; }
       * { box-sizing: border-box; }
       body { margin: 0; width: 100vw; min-height: 100dvh; background: #E9EAEE; overflow-x: hidden; }
