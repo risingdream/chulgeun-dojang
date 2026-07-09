@@ -390,7 +390,8 @@ describe("worker app", () => {
         ownerPinHash: "configured-pin-hash",
         employees: [
           { id: "employee-active", name: "강태오", status: "registered" },
-          { id: "employee-inactive", name: "문소리", status: "inactive" }
+          { id: "employee-inactive", name: "문소리", status: "inactive" },
+          { id: "employee-a", name: "김민지", status: "fixture_removed" }
         ]
       })
     };
@@ -406,6 +407,10 @@ describe("worker app", () => {
     expect(listHtml).toContain("삭제 대신 비활성화");
     expect(listHtml).toContain("강태오");
     expect(listHtml).toContain("문소리");
+    expect(listHtml).not.toContain("김민지");
+
+    const removedFixtureDetail = await app.request("/admin/employees/employee-a", { headers: auth }, env);
+    expect(removedFixtureDetail.status).toBe(404);
 
     const newPage = await app.request("/admin/employees/new", { headers: auth }, env);
     const newHtml = await newPage.text();

@@ -681,11 +681,13 @@ async function listAllEmployees(env: Env | undefined, workspaceId = DEFAULT_WORK
   const result = await env.DB.prepare(
     `SELECT id, name, employee_code_hash, status
      FROM employees
-     WHERE workspace_id = ?
+     WHERE workspace_id = ? AND status IN ('registered', 'inactive')
      ORDER BY CASE status WHEN 'registered' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, registered_at ASC, name ASC`
   ).bind(workspaceId).all<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
 
-  return (result.results ?? []).map((row) => ({ id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status }));
+  return (result.results ?? [])
+    .map((row) => ({ id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status }))
+    .filter(isManageableEmployee);
 }
 
 async function findRegisteredEmployee(env: Env | undefined, workspaceId: string, employeeId: string): Promise<EmployeeRecord | undefined> {
@@ -706,7 +708,10 @@ async function findRegisteredEmployee(env: Env | undefined, workspaceId: string,
 
 async function getEmployee(env: Env | undefined, employeeId: string, workspaceId = DEFAULT_WORKSPACE_ID): Promise<EmployeeRecord | undefined> {
   if (!employeeId) return undefined;
-  if (!env?.DB) return memoryStore.employees.find((employee) => employee.id === employeeId);
+  if (!env?.DB) {
+    const employee = memoryStore.employees.find((item) => item.id === employeeId);
+    return employee && isManageableEmployee(employee) ? employee : undefined;
+  }
 
   const row = await env.DB.prepare(
     `SELECT id, name, employee_code_hash, status
@@ -715,7 +720,9 @@ async function getEmployee(env: Env | undefined, employeeId: string, workspaceId
      LIMIT 1`
   ).bind(workspaceId, employeeId).first<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
 
-  return row ? { id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status } : undefined;
+  if (!row) return undefined;
+  const employee = { id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status };
+  return isManageableEmployee(employee) ? employee : undefined;
 }
 
 async function createEmployee(env: Env | undefined, workspaceId: string, name: string): Promise<EmployeeRecord> {
@@ -765,6 +772,10 @@ async function renameEmployee(env: Env | undefined, employeeId: string, name: st
 
 function isFixtureEmployee(employee: EmployeeRecord): boolean {
   return fixtureEmployeeIds.has(employee.id);
+}
+
+function isManageableEmployee(employee: EmployeeRecord): boolean {
+  return !isFixtureEmployee(employee) && ["registered", "inactive"].includes(employee.status ?? "registered");
 }
 
 async function getWorkspaceLocation(env: Env | undefined, workspaceId = DEFAULT_WORKSPACE_ID): Promise<WorkspaceLocation | undefined> {
