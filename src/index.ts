@@ -41,6 +41,8 @@ const app = new Hono<{ Bindings: Env }>();
 
 const DEFAULT_WORKSPACE_ID = "default-workspace";
 const DEFAULT_KIOSK_ID = "main-kiosk";
+const DEFAULT_WORKSPACE_DISPLAY_NAME = "카페 소소";
+const DEFAULT_KIOSK_DISPLAY_NAME = "카운터 태블릿";
 const QR_TTL_SECONDS = 30;
 const LOCAL_SECRET = "local-dev-secret";
 const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
@@ -73,19 +75,19 @@ app.get("/", (context) => {
   return context.html(layout({
     title: "출근도장",
     body: `
-      <section class="hero-card">
-        <div class="eyebrow">Open-source attendance</div>
-        <h1>출근도장</h1>
-        <p>소규모 사업장을 위한 무료 오픈소스 큐알 근태 기록기. 앱 설치 없이 웹에서 출퇴근을 기록하고, 패스키와 위치 확인으로 조작 가능성을 낮춥니다.</p>
-        <ul>
-          <li>직원 앱 설치 없음</li>
-          <li>현장 큐알과 패스키 기반 출퇴근</li>
-          <li>수정 대신 정정 이벤트를 남기는 기록 구조</li>
-          <li>Cloudflare Workers와 D1 기반 서버리스 운영</li>
-        </ul>
+      <section class="landing-shell">
+        <div class="brand-row">${brandMark()}<span class="pill">직원 앱 설치 없음</span></div>
+        <div class="landing-copy">
+          <p class="eyebrow">small business attendance</p>
+          <h1>앱 설치 없는<br />큐알 출퇴근 장부</h1>
+          <p>남는 태블릿을 키오스크로 켜두고, 직원은 자기 폰 카메라로 찍습니다. 매일은 가볍게, 월말에는 CSV로 바로 정리합니다.</p>
+        </div>
+        <div class="flow-strip">
+          <span>1 큐알 찍기</span><span>2 이름 확인</span><span>3 출근·퇴근</span><span>4 월말 내려받기</span>
+        </div>
         <div class="actions">
-          <a class="button primary" href="/start">운영 시작</a>
-          <a class="button" href="/kiosk">키오스크 열기</a>
+          <a class="button primary" href="/kiosk">키오스크 열기</a>
+          <a class="button" href="/start">운영 흐름 보기</a>
         </div>
       </section>
     `
@@ -98,19 +100,19 @@ app.get("/start", (context) => {
   return context.html(layout({
     title: "출근도장 운영 시작",
     body: `
-      <section class="hero-card">
-        <div class="eyebrow">Production flow</div>
-        <h1>운영 시작</h1>
-        <p>아래 키오스크 화면을 현장 태블릿이나 사장님 기기에서 열고, 직원폰으로 큐알을 찍어 출퇴근을 기록합니다.</p>
-        <ol>
-          <li>키오스크 화면을 엽니다.</li>
-          <li>화면의 큐알 또는 링크를 직원폰에서 엽니다.</li>
-          <li>직원과 출퇴근 유형을 선택하고 기록합니다.</li>
-          <li>같은 큐알을 다시 열면 재사용이 막히는지 확인합니다.</li>
-        </ol>
+      <section class="hero-card plan-card">
+        <div class="brand-row">${brandMark()}<span class="pill green">운영 시작</span></div>
+        <h1>매장에는 키오스크,<br />직원은 자기 폰</h1>
+        <p>키오스크의 큐알을 직원 폰으로 찍고, 첫 1회만 이름을 고릅니다. 다음부터는 이 폰 기억으로 바로 출근·퇴근합니다.</p>
+        <div class="step-list">
+          <div><strong>1</strong><span>키오스크 화면을 매장에 켭니다</span></div>
+          <div><strong>2</strong><span>직원이 자기 폰으로 큐알을 찍습니다</span></div>
+          <div><strong>3</strong><span>위치는 1회만 저장하고, 없으면 흔적을 남깁니다</span></div>
+          <div><strong>4</strong><span>사장님 화면에서 오늘 기록을 확인합니다</span></div>
+        </div>
         <div class="actions">
           <a class="button primary" href="/kiosk">키오스크 열기</a>
-          <a class="button" href="/events">최근 기록 보기</a>
+          <a class="button" href="/admin/today">사장님 확인</a>
         </div>
       </section>
     `
@@ -140,24 +142,43 @@ app.get("/kiosk", async (context) => {
     title: "출근도장 키오스크",
     refreshSeconds: 25,
     body: `
-      <section class="hero-card kiosk">
-        <div class="eyebrow">Production kiosk</div>
-        <h1>출근도장 키오스크</h1>
-        <p>큐알은 30초 동안만 살아있고, 스캔되면 전역 1회 소비됩니다. 직원은 자기 폰 카메라로 찍고 출근 또는 퇴근만 누르면 됩니다.</p>
-        <div class="qr-wrap">
-          <img alt="출근도장 큐알" src="https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(scanUrl)}" />
+      <section class="kiosk-screen">
+        <div class="kiosk-top">
+          ${brandMark()}
+          <div class="kiosk-meta">
+            <strong>${DEFAULT_WORKSPACE_DISPLAY_NAME}</strong>
+            <span>${DEFAULT_KIOSK_DISPLAY_NAME}</span>
+          </div>
+          <span class="status-pill">정상 연결</span>
         </div>
-        <p class="small">새 큐알까지 30초 · 만료된 큐알은 기록되지 않습니다.</p>
+        <div class="clock-face">
+          <strong data-now-clock>12:00:42</strong>
+          <span>7월 9일 목요일</span>
+        </div>
+        <div class="kiosk-instructions">
+          <div><strong>1</strong><span>내 폰 카메라로 큐알을 찍어주세요</span></div>
+          <div><strong>2</strong><span>처음이면 이름을 한 번만 선택해주세요</span></div>
+          <div><strong>3</strong><span>출근 또는 퇴근을 눌러주세요</span></div>
+        </div>
+        <div class="qr-stage">
+          <div class="qr-wrap">
+            <img alt="출근도장 큐알" src="https://api.qrserver.com/v1/create-qr-code/?size=360x360&data=${encodeURIComponent(scanUrl)}" />
+          </div>
+          <div class="timer-badge">${QR_TTL_SECONDS}</div>
+        </div>
+        <p class="timer-copy">새 큐알까지 ${QR_TTL_SECONDS}초</p>
+        <p class="small">만료된 큐알은 기록되지 않습니다</p>
         <p><a class="scan-link" href="${escapeHtml(scanUrl)}">${escapeHtml(scanUrl)}</a></p>
-        <div class="actions">
+        <div class="actions kiosk-actions">
           <a class="button" href="/kiosk">새 큐알 받기</a>
-          <a class="button" href="/admin/today">사장님 확인</a>
+          <a class="button ghost" href="/admin/today">사장님 확인</a>
         </div>
+        <p class="owner-hint">사장님 열람: 여기를 3초 길게 누르세요</p>
       </section>
-      <section class="list-card">
+      <section class="notice-card surface-card">
         <h2>상태 안내</h2>
         <p class="small">오프라인이면 큐알을 만들 수 없습니다. 연결되면 자동으로 새 큐알을 만듭니다.</p>
-        <p class="small">큐알 갱신이 실패하면 새 큐알 받기를 눌러 다시 시도해주세요.</p>
+        <p class="small">공용 화면에는 직원 이름과 출퇴근 내역을 표시하지 않습니다.</p>
       </section>
     `
   }));
@@ -244,18 +265,11 @@ app.post("/api/clock", async (context) => {
 
   return context.html(layout({
     title: "기록 완료",
-    body: `
-      <section class="hero-card success">
-        <div class="eyebrow">Saved</div>
-        <h1>${eventType === "clock_in" ? "출근" : "퇴근"} 기록 완료</h1>
-        <p><strong>${escapeHtml(result.employeeName)}</strong>의 기록이 저장됐습니다.</p>
-        <p class="small">${formatRiskSummary(result.riskFlags)}</p>
-        <div class="actions">
-          <a class="button primary" href="/kiosk">키오스크로 돌아가기</a>
-          <a class="button" href="/forget-device">기억 해제</a>
-        </div>
-      </section>
-    `
+    body: renderSuccessPage({
+      employeeName: result.employeeName,
+      eventType,
+      riskFlags: result.riskFlags
+    })
   }));
 });
 
@@ -295,8 +309,8 @@ app.get("/admin/today", async (context) => {
   return context.html(layout({
     title: "오늘 기록",
     body: `
-      <section class="hero-card">
-        <div class="eyebrow">Owner view</div>
+      <section class="hero-card owner-card">
+        <div class="brand-row">${brandMark()}<span class="pill green">사장님 화면</span></div>
         <h1>오늘 기록</h1>
         <p>키오스크 공용 화면에는 보이지 않는 사장님 확인 화면입니다.</p>
         <div class="summary-grid">
@@ -601,14 +615,14 @@ function renderScanPage(input: {
     ? `
         <input type="hidden" name="employeeId" value="${escapeHtml(input.rememberedEmployee.id)}" />
         <div class="remembered-card">
-          <div class="eyebrow">이 폰 기억됨</div>
-          <h1>${escapeHtml(input.rememberedEmployee.name)} 님</h1>
-          <p class="small">내가 아니면 기록하지 말고 기기 기억을 해제해주세요.</p>
+          <div class="phone-status">이 폰 기억됨</div>
+          <h1>${escapeHtml(input.rememberedEmployee.name)} 님, 안녕하세요</h1>
+          <p>${DEFAULT_WORKSPACE_DISPLAY_NAME} · 지금 시각으로 기록합니다</p>
+          <a class="subtle-link" href="/forget-device">내가 아니에요 — 이름 선택으로</a>
         </div>
       `
     : `
-        <h1>처음이시네요</h1>
-        <p>이름을 한 번만 선택해주세요.</p>
+        <h1>처음이시네요.<br />이름을 한 번만 선택해주세요.</h1>
         <div class="employee-grid" role="radiogroup" aria-label="직원 선택">
           ${seedEmployees.map((employee, index) => `
             <label class="employee-choice">
@@ -624,25 +638,25 @@ function renderScanPage(input: {
       `;
 
   return `
-    <section class="hero-card">
-      <div class="eyebrow">Clock event</div>
+    <section class="phone-screen">
+      <div class="phone-top">${brandMark()}<span class="phone-status">큐알 확인됨</span></div>
       <form method="post" action="/api/clock" class="form-card" data-clock-form>
         <input type="hidden" name="token" value="${escapeHtml(input.token)}" />
         <input type="hidden" name="attemptId" value="${escapeHtml(input.attemptId)}" />
         ${employeeChoice}
-        <section class="notice-card">
+        <section class="notice-card location-card">
           <h2>위치를 확인할까요?</h2>
-          <p>기록하는 순간의 위치 1회만 저장합니다.<br>이동 경로는 수집하지 않습니다.</p>
+          <p>기록하는 순간의 위치 1회만 저장합니다.<br />이동 경로는 수집하지 않습니다.</p>
           <input type="hidden" name="latitude" data-location="lat" />
           <input type="hidden" name="longitude" data-location="lng" />
           <input type="hidden" name="accuracyMeters" data-location="accuracy" />
           <input type="hidden" name="locationConsent" value="unavailable" data-location="consent" />
-          <p class="small" data-location-status>브라우저 위치 권한은 선택입니다.</p>
-          <button class="button" type="button" data-skip-location>위치 없이 기록</button>
+          <p class="small" data-location-status>위치 권한은 선택입니다. 허용하지 않아도 기록은 남습니다.</p>
+          <button class="button ghost" type="button" data-skip-location>위치 없이 기록</button>
         </section>
         <div class="clock-buttons">
-          <button class="button primary clock-in" type="submit" name="eventType" value="clock_in">출근</button>
-          <button class="button clock-out" type="submit" name="eventType" value="clock_out">퇴근</button>
+          <button class="clock-action in" type="submit" name="eventType" value="clock_in"><strong>출근</strong><span>지금 시각으로 기록합니다</span></button>
+          <button class="clock-action out" type="submit" name="eventType" value="clock_out"><strong>퇴근</strong><span>지금 시각으로 기록합니다</span></button>
         </div>
       </form>
     </section>
@@ -669,6 +683,24 @@ function renderScanPage(input: {
   `;
 }
 
+function renderSuccessPage(input: { employeeName: string; eventType: ClockEventType; riskFlags: string[] }): string {
+  const actionLabel = input.eventType === "clock_in" ? "출근" : "퇴근";
+  return `
+    <section class="phone-screen success-screen">
+      <div class="phone-top">${brandMark()}<span class="phone-status green">저장 완료</span></div>
+      <div class="success-symbol">✓</div>
+      <h1>${actionLabel} 기록 완료</h1>
+      <p><strong>${escapeHtml(input.employeeName)}</strong>의 ${actionLabel} 기록이 저장됐습니다.</p>
+      <div class="risk-summary ${input.riskFlags.length ? "warning" : ""}">${escapeHtml(formatRiskSummary(input.riskFlags))}</div>
+      <div class="actions stacked-actions">
+        <a class="button primary" href="/kiosk">키오스크로 돌아가기</a>
+        <a class="button ghost" href="/forget-device">기억 해제</a>
+      </div>
+      <p class="small">다음 버전에서는 여기서 패스키 등록으로 더 강하게 확인합니다.</p>
+    </section>
+  `;
+}
+
 function renderEventList(events: AttendanceEventRecord[], title = "최근 기록"): string {
   if (events.length === 0) {
     return `<section class="list-card"><h2>${escapeHtml(title)}</h2><p class="small">아직 기록이 없습니다.</p></section>`;
@@ -691,6 +723,10 @@ function renderEventList(events: AttendanceEventRecord[], title = "최근 기록
   `;
 }
 
+function brandMark(): string {
+  return `<div class="brand-mark"><span>출</span><strong>출근도장</strong></div>`;
+}
+
 function layout(input: { title: string; body: string; refreshSeconds?: number }): string {
   return `<!doctype html>
 <html lang="ko">
@@ -700,44 +736,85 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
     <title>${escapeHtml(input.title)} · 출근도장</title>
     ${input.refreshSeconds ? `<meta http-equiv="refresh" content="${input.refreshSeconds}" />` : ""}
     <style>
-      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #08111f; color: #e2e8f0; }
+      :root { color-scheme: light; font-family: Pretendard, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #F3EFE7; color: #22262B; }
       * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(59,130,246,.28), transparent 34rem), #08111f; }
-      main { width: min(880px, calc(100vw - 32px)); margin: 0 auto; padding: 48px 0; display: grid; gap: 20px; }
-      .hero-card, .list-card { border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 28px; padding: clamp(24px, 5vw, 42px); background: rgba(15, 23, 42, 0.78); box-shadow: 0 24px 80px rgba(2, 6, 23, 0.42); backdrop-filter: blur(16px); }
-      .eyebrow { color: #93c5fd; font-size: 13px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-      h1 { margin: 14px 0; font-size: clamp(40px, 8vw, 74px); line-height: 1; letter-spacing: -0.06em; }
-      h2 { margin: 0 0 16px; font-size: 24px; }
-      p, li { color: #cbd5e1; font-size: 18px; line-height: 1.7; }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(193,58,42,.12), transparent 26rem), linear-gradient(180deg, #FDFBF6 0%, #F3EFE7 100%); }
+      main { width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: clamp(24px, 4vw, 48px) 0; display: grid; gap: 22px; justify-items: center; }
+      h1 { margin: 18px 0 0; font-size: clamp(34px, 7vw, 78px); line-height: .98; letter-spacing: -0.055em; color: #171717; }
+      h2 { margin: 0 0 10px; color: #22262B; font-size: 24px; }
+      p, li { color: #6E6A61; font-size: 17px; line-height: 1.65; }
       ul, ol { display: grid; gap: 8px; padding-left: 22px; }
-      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
-      .button, button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 18px; border: 1px solid rgba(147,197,253,.4); border-radius: 14px; color: #dbeafe; background: rgba(30,41,59,.82); text-decoration: none; font-weight: 800; cursor: pointer; }
-      .button.primary, button.primary { background: #2563eb; border-color: #60a5fa; color: white; }
-      .qr-wrap { display: inline-grid; padding: 16px; border-radius: 24px; background: white; margin: 18px 0; }
-      .qr-wrap img { display: block; width: 280px; height: 280px; }
-      .scan-link { color: #93c5fd; word-break: break-all; }
-      .small { color: #94a3b8; font-size: 14px; }
-      .form-card { display: grid; gap: 16px; margin-top: 24px; }
-      label { display: grid; gap: 8px; color: #bfdbfe; font-weight: 700; }
-      select { min-height: 48px; border-radius: 14px; border: 1px solid rgba(148,163,184,.35); padding: 0 14px; background: #0f172a; color: #e2e8f0; font-size: 16px; }
-      .employee-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-      .employee-choice, .remember-toggle, .notice-card { border: 1px solid rgba(148,163,184,.28); border-radius: 18px; padding: 16px; background: rgba(15,23,42,.62); }
-      .employee-choice { display: flex; align-items: center; gap: 10px; min-height: 58px; }
-      .remember-toggle { display: flex; grid-template-columns: none; align-items: center; gap: 12px; }
+      .eyebrow { margin: 0; color: #C13A2A; font-size: 12px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+      .brand-mark, .brand-row, .phone-top, .kiosk-top { display: flex; align-items: center; gap: 8px; }
+      .brand-mark span { width: 26px; height: 26px; border-radius: 7px; background: #C13A2A; color: white; display: grid; place-items: center; font-size: 12px; font-weight: 900; }
+      .brand-mark strong { font-size: 15px; color: #22262B; }
+      .brand-row { width: 100%; justify-content: space-between; }
+      .pill, .status-pill, .phone-status { background: #F3E7D8; color: #9F2E22; font-size: 12px; font-weight: 800; padding: 7px 12px; border-radius: 999px; white-space: nowrap; }
+      .pill.green, .status-pill, .phone-status.green { background: #E8F3EC; color: #217A4B; }
+      .hero-card, .list-card, .landing-shell, .kiosk-screen, .phone-screen, .surface-card { border: 1px solid #E8E1D3; border-radius: 28px; background: rgba(255,255,255,.84); box-shadow: 0 18px 50px rgba(93, 70, 41, .11); }
+      .hero-card, .list-card, .landing-shell, .surface-card { width: min(920px, 100%); padding: clamp(24px, 5vw, 46px); }
+      .landing-shell { min-height: 520px; display: grid; align-content: center; gap: 28px; }
+      .landing-copy p { max-width: 640px; }
+      .flow-strip, .step-list { display: grid; gap: 10px; }
+      .flow-strip { grid-template-columns: repeat(4, 1fr); }
+      .flow-strip span, .step-list div { background: #FFF8ED; border: 1px solid #E8E1D3; border-radius: 18px; padding: 16px; color: #3C424A; font-weight: 800; }
+      .step-list div { display: flex; align-items: center; gap: 14px; }
+      .step-list strong { width: 34px; height: 34px; border-radius: 50%; background: #C13A2A; color: white; display: grid; place-items: center; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+      .button, button { display: inline-flex; align-items: center; justify-content: center; min-height: 50px; padding: 0 18px; border: 1px solid #D8CDBB; border-radius: 15px; color: #3C424A; background: #FFFFFF; text-decoration: none; font-weight: 900; cursor: pointer; }
+      .button.primary, button.primary { background: #C13A2A; border-color: #C13A2A; color: white; }
+      .button.ghost, button.ghost { background: #FDFBF6; color: #6E6A61; }
+      .kiosk-screen { width: min(900px, 100%); padding: clamp(26px, 5vw, 46px); display: grid; gap: 18px; text-align: center; }
+      .kiosk-top { justify-content: space-between; text-align: left; }
+      .kiosk-meta { display: grid; gap: 2px; margin-right: auto; }
+      .kiosk-meta strong { font-size: 17px; }
+      .kiosk-meta span, .clock-face span, .owner-hint, .small { color: #8A8478; font-size: 13px; }
+      .clock-face { display: grid; gap: 4px; justify-items: center; }
+      .clock-face strong { font-size: clamp(54px, 10vw, 86px); line-height: 1; letter-spacing: -.05em; color: #171717; }
+      .kiosk-instructions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      .kiosk-instructions div { background: #FFF8ED; border: 1px solid #E8E1D3; border-radius: 18px; padding: 14px; display: grid; gap: 6px; }
+      .kiosk-instructions strong { width: 28px; height: 28px; margin: 0 auto; border-radius: 50%; background: #C13A2A; color: white; display: grid; place-items: center; }
+      .qr-stage { position: relative; width: fit-content; margin: 8px auto 0; }
+      .qr-wrap { display: inline-grid; padding: 18px; border-radius: 30px; background: white; border: 1px solid #E8E1D3; box-shadow: 0 16px 38px rgba(58, 39, 19, .12); }
+      .qr-wrap img { display: block; width: min(360px, 72vw); height: min(360px, 72vw); }
+      .timer-badge { position: absolute; right: -14px; top: -14px; width: 58px; height: 58px; border-radius: 50%; background: #C13A2A; color: white; display: grid; place-items: center; font-size: 22px; font-weight: 900; border: 5px solid #FDFBF6; }
+      .timer-copy { margin: 0; color: #3C424A; font-weight: 900; }
+      .scan-link { color: #9F2E22; word-break: break-all; font-size: 12px; }
+      .kiosk-actions { justify-content: center; margin-top: 8px; }
+      .phone-screen { width: min(402px, 100%); min-height: 780px; padding: 58px 22px 36px; display: flex; flex-direction: column; gap: 18px; }
+      .phone-top { justify-content: space-between; }
+      .phone-screen h1 { font-size: 28px; line-height: 1.16; letter-spacing: -.03em; }
+      .form-card { display: grid; gap: 16px; margin-top: 2px; }
+      .employee-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .employee-choice, .remember-toggle, .notice-card { border: 1px solid #E8E1D3; border-radius: 18px; padding: 15px; background: #FFFFFF; color: #22262B; }
+      .employee-choice { display: flex; align-items: center; gap: 9px; min-height: 56px; font-weight: 800; }
+      .remember-toggle { display: flex; align-items: center; gap: 12px; }
       .remember-toggle span { display: grid; gap: 4px; }
-      .remember-toggle small { color: #94a3b8; font-weight: 500; }
-      .remembered-card h1 { margin-top: 8px; }
-      .clock-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-      .clock-buttons button { min-height: 84px; font-size: 28px; }
-      .clock-out { background: #111827; color: #f8fafc; border-color: rgba(248,250,252,.22); }
-      .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 20px; }
-      .summary-grid div { border: 1px solid rgba(148,163,184,.25); border-radius: 18px; padding: 16px; background: rgba(15,23,42,.62); }
-      .summary-grid strong { display: block; font-size: 34px; color: white; }
+      .remember-toggle small { color: #8A8478; font-weight: 600; }
+      .remembered-card { display: grid; gap: 10px; }
+      .subtle-link { color: #8A8478; font-size: 13px; font-weight: 800; text-decoration: none; }
+      .location-card { background: #FFF8ED; }
+      .location-card p { margin: 0; font-size: 14px; }
+      .clock-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px; }
+      .clock-action { min-height: 112px; border-radius: 22px; border: 0; display: grid; gap: 7px; padding: 18px; color: white; }
+      .clock-action strong { font-size: 30px; }
+      .clock-action span { font-size: 12px; color: rgba(255,255,255,.86); }
+      .clock-action.in { background: #C13A2A; }
+      .clock-action.out { background: #22262B; }
+      .success-screen { text-align: center; justify-content: center; }
+      .success-symbol { width: 84px; height: 84px; margin: 0 auto; border-radius: 50%; background: #E8F3EC; color: #217A4B; display: grid; place-items: center; font-size: 46px; font-weight: 900; }
+      .risk-summary { border-radius: 16px; padding: 14px; background: #E8F3EC; color: #217A4B; font-weight: 900; }
+      .risk-summary.warning { background: #FFF1DF; color: #9F2E22; }
+      .stacked-actions { display: grid; }
+      .owner-card { text-align: left; }
+      .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 22px; }
+      .summary-grid div { border: 1px solid #E8E1D3; border-radius: 18px; padding: 18px; background: #FFF8ED; }
+      .summary-grid strong { display: block; font-size: 38px; color: #171717; }
+      .summary-grid span { color: #6E6A61; font-weight: 800; }
       .event-list { display: grid; gap: 10px; }
-      .event-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: rgba(15,23,42,.72); color: #cbd5e1; }
-      .event-row em { color: #93c5fd; font-style: normal; }
-      .success h1 { color: #86efac; }
-      @media (max-width: 640px) { .event-row { grid-template-columns: 1fr; } .qr-wrap img { width: 220px; height: 220px; } }
+      .event-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: #FFF8ED; color: #3C424A; }
+      .event-row em { color: #9F2E22; font-style: normal; font-weight: 800; }
+      @media (max-width: 720px) { .flow-strip, .kiosk-instructions, .summary-grid { grid-template-columns: 1fr; } .event-row { grid-template-columns: 1fr; } .phone-screen { min-height: auto; } }
     </style>
   </head>
   <body><main>${input.body}</main></body>

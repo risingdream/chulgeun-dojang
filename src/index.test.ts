@@ -33,7 +33,7 @@ describe("worker app", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(html).toContain("출근도장");
-    expect(html).toContain("무료 오픈소스 큐알 근태 기록기");
+    expect(html).toContain("앱 설치 없는");
     expect(html).toContain("/start");
     expect(html).toContain("/kiosk");
   });
