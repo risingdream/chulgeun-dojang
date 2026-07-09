@@ -162,6 +162,23 @@ describe("worker app", () => {
     expect(html).toContain("퇴근");
   });
 
+  it("renders scan full-bleed with registered D1 employees instead of fixture employees", async () => {
+    const token = await createToken(`d1-employees-${crypto.randomUUID()}`);
+    const response = await app.request(`/scan?token=${encodeURIComponent(token)}`, {}, {
+      DB: fakeD1({ employees: [{ id: "employee-real-1", name: "강태오", codeHash: "real-1-code" }] })
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("강태오");
+    expect(html).toContain('name="employeeId" value="employee-real-1"');
+    expect(html).not.toContain("김민지");
+    expect(html).toContain(".staff-screen { width: 100vw; min-height: 100dvh; height: 100dvh; border-radius: 0; background: #FDFBF6; overflow: auto; position: relative; box-shadow: none; border: 0;");
+    expect(html).toContain("main:has(.staff-screen) { align-items: stretch; justify-content: stretch; padding: 0; background: #FDFBF6; }");
+    expect(html).not.toContain("width: min(430px, 100%)");
+    expect(html).not.toContain("min-height: min(760px, calc(100vh - 24px))");
+  });
+
   it("skips employee selection when the device remembered a valid employee", async () => {
     const token = await createToken(`remembered-device-${crypto.randomUUID()}`);
     const response = await app.request(`/scan?token=${encodeURIComponent(token)}`, {
@@ -206,9 +223,41 @@ describe("worker app", () => {
     expect(headers.get("set-cookie")).toContain("rememberedEmployeeId=employee-a");
 
     const forget = await app.request("/forget-device");
+    const forgetHtml = await forget.text();
     expect(forget.status).toBe(200);
     expect(forget.headers.get("set-cookie")).toContain("rememberedEmployeeId=;");
-    expect(await forget.text()).toContain("기기 기억을 해제했습니다");
+    expect(forgetHtml).toContain("기기 기억을 해제했습니다");
+    expect(forgetHtml).toContain("이 화면은 닫아도 됩니다");
+    expect(forgetHtml).not.toContain('href="/kiosk"');
+  });
+
+  it("records attendance for a registered D1 employee and never falls back to fixture employees", async () => {
+    const token = await createToken(`d1-clock-${crypto.randomUUID()}`);
+    const env = { DB: fakeD1({ employees: [{ id: "employee-real-2", name: "문소리", codeHash: "real-2-code" }] }) };
+    const scan = await app.request(`/scan?token=${encodeURIComponent(token)}`, {}, env);
+    const scanHtml = await scan.text();
+    const attemptId = scanHtml.match(/name="attemptId" value="([^"]+)"/)?.[1];
+
+    expect(scanHtml).toContain("문소리");
+    expect(attemptId).toBeTruthy();
+
+    const response = await app.request("/api/clock", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        token,
+        attemptId: attemptId ?? "",
+        employeeId: "employee-real-2",
+        eventType: "clock_in",
+        locationConsent: "skipped"
+      })
+    }, env);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("문소리");
+    expect(html).not.toContain("김민지");
+    expect(html).not.toContain('href="/kiosk"');
   });
 
   it("records skipped location as an explicit risk flag", async () => {
@@ -399,11 +448,18 @@ function d1WithoutOwnerSetup(): D1Database {
   } as unknown as D1Database;
 }
 
-function fakeD1(initial: { workspaceName?: string; ownerPinHash?: string | null; kioskName?: string } = {}): D1Database {
+function fakeD1(initial: {
+  workspaceName?: string;
+  ownerPinHash?: string | null;
+  kioskName?: string;
+  employees?: Array<{ id: string; name: string; codeHash?: string; status?: string }>;
+} = {}): D1Database {
   const state = {
     workspaceName: initial.workspaceName ?? "운영 사업장",
     ownerPinHash: initial.ownerPinHash ?? null,
-    kioskName: initial.kioskName ?? "입구 키오스크"
+    kioskName: initial.kioskName ?? "입구 키오스크",
+    employees: initial.employees ?? [],
+    consumptions: new Map<string, { attemptId: string; completedEmployeeId?: string }>()
   };
 
   return {
@@ -421,13 +477,46 @@ function fakeD1(initial: { workspaceName?: string; ownerPinHash?: string | null;
               kiosk_name: state.kioskName
             };
           }
+          if (query.includes("FROM employees")) {
+            const employee = state.employees.find((item) => item.id === args[1]);
+            if (!employee) return null;
+            return {
+              id: employee.id,
+              name: employee.name,
+              employee_code_hash: employee.codeHash ?? `${employee.id}-code`,
+              status: employee.status ?? "registered"
+            };
+          }
+          if (query.includes("FROM qr_consumptions")) {
+            const record = state.consumptions.get(String(args[0]));
+            if (!record || record.attemptId !== args[1]) return null;
+            return { completed_employee_id: record.completedEmployeeId ?? null };
+          }
+          if (query.includes("SELECT event_hash FROM attendance_events")) {
+            return null;
+          }
           return null;
         },
-        all: async () => ({ results: [] }),
+        all: async () => {
+          if (query.includes("FROM employees")) {
+            return {
+              results: state.employees.map((employee) => ({
+                id: employee.id,
+                name: employee.name,
+                employee_code_hash: employee.codeHash ?? `${employee.id}-code`,
+                status: employee.status ?? "registered"
+              }))
+            };
+          }
+          return { results: [] };
+        },
         run: async () => {
           if (query.includes("INSERT INTO workspaces")) {
             state.workspaceName = String(args[1] ?? state.workspaceName);
             state.ownerPinHash = typeof args[6] === "string" ? args[6] : state.ownerPinHash;
+          }
+          if (query.includes("INSERT INTO qr_consumptions")) {
+            state.consumptions.set(String(args[0]), { attemptId: String(args[3]) });
           }
           return { success: true };
         }
