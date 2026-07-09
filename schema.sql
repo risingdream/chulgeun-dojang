@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   longitude REAL,
   radius_meters INTEGER NOT NULL DEFAULT 50,
   owner_email_hash TEXT NOT NULL,
+  owner_pin_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

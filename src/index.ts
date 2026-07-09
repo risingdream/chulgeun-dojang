@@ -8,7 +8,6 @@ type Env = {
   APP_NAME?: string;
   QR_SECRET?: string;
   ADMIN_EXPORT_TOKEN?: string;
-  ADMIN_PIN?: string;
 };
 
 type AdminPinPageOptions = {
@@ -66,7 +65,9 @@ const seedEmployees = [
 
 const memoryStore = {
   consumptions: new Map<string, ConsumptionRecord>(),
-  events: [] as AttendanceEventRecord[]
+  events: [] as AttendanceEventRecord[],
+  workspaceName: DEFAULT_WORKSPACE_DISPLAY_NAME,
+  ownerPinHash: undefined as string | undefined
 };
 
 app.onError((error, context) => {
@@ -128,6 +129,35 @@ app.get("/start", (context) => {
       </section>
     `
   }));
+});
+
+app.get("/setup", async (context) => {
+  const ownerPinHash = await getOwnerPinHash(context.env);
+  if (ownerPinHash) {
+    return context.html(messagePage("이미 setup이 끝났습니다", "사장님 PIN은 사업장 설정에 저장되어 있습니다.", "/kiosk"));
+  }
+
+  return context.html(layout({ title: "사업자 setup", body: renderSetupPage() }));
+});
+
+app.post("/setup", async (context) => {
+  const body = await context.req.parseBody();
+  const businessName = stringField(body.businessName).trim() || DEFAULT_WORKSPACE_DISPLAY_NAME;
+  const ownerPin = stringField(body.ownerPin).trim();
+
+  if (!/^\d{4}$/.test(ownerPin)) {
+    return context.html(layout({
+      title: "사업자 setup",
+      body: renderSetupPage({ errorMessage: "사장님 PIN은 숫자 4자리로 설정해주세요", businessName })
+    }), 400);
+  }
+
+  await saveWorkspaceSetup(context.env, {
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    businessName,
+    ownerPinHash: await hashOwnerPin(ownerPin, DEFAULT_WORKSPACE_ID, context.env)
+  });
+  return context.redirect("/kiosk", 302);
 });
 
 app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
@@ -289,17 +319,18 @@ app.get("/admin/today", async (context) => {
 });
 
 app.post("/admin/unlock", async (context) => {
-  const adminPin = context.env?.ADMIN_PIN;
-  if (!adminPin) {
+  const ownerPinHash = await getOwnerPinHash(context.env);
+  if (!ownerPinHash) {
     return context.html(layout({
       title: "사장님 확인",
-      body: renderAdminPinPage({ setupMissing: true, errorMessage: "관리자 PIN이 아직 설정되지 않았습니다" })
+      body: renderAdminPinPage({ setupMissing: true, errorMessage: "사업자 setup에서 사장님 PIN을 먼저 설정해주세요" })
     }), 503);
   }
 
   const body = await context.req.parseBody();
   const pin = stringField(body.pin).trim();
-  if (!timingSafeEqual(pin, adminPin)) {
+  const submittedHash = await hashOwnerPin(pin, DEFAULT_WORKSPACE_ID, context.env);
+  if (!timingSafeEqual(submittedHash, ownerPinHash)) {
     return context.html(layout({
       title: "사장님 확인",
       body: renderAdminPinPage({ errorMessage: "PIN이 맞지 않습니다" })
@@ -340,9 +371,9 @@ async function ensureDefaultSeed(env?: Env): Promise<void> {
 
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT OR IGNORE INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(DEFAULT_WORKSPACE_ID, "운영 사업장", 37.5133, 127.1002, 80, "owner"),
+      `INSERT OR IGNORE INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash, owner_pin_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(DEFAULT_WORKSPACE_ID, "운영 사업장", 37.5133, 127.1002, 80, "owner", null),
     env.DB.prepare(`INSERT OR IGNORE INTO kiosks (id, workspace_id, name, status) VALUES (?, ?, ?, ?)`)
       .bind(DEFAULT_KIOSK_ID, DEFAULT_WORKSPACE_ID, "입구 키오스크", "active"),
     ...seedEmployees.map((employee) =>
@@ -353,6 +384,40 @@ async function ensureDefaultSeed(env?: Env): Promise<void> {
       ).bind(employee.id, DEFAULT_WORKSPACE_ID, employee.name, employee.codeHash, "registered", new Date().toISOString())
     )
   ]);
+}
+
+async function saveWorkspaceSetup(
+  env: Env | undefined,
+  input: { workspaceId: string; businessName: string; ownerPinHash: string }
+): Promise<void> {
+  if (!env?.DB) {
+    memoryStore.workspaceName = input.businessName;
+    memoryStore.ownerPinHash = input.ownerPinHash;
+    return;
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash, owner_pin_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, owner_pin_hash = excluded.owner_pin_hash`
+  ).bind(input.workspaceId, input.businessName, 37.5133, 127.1002, 80, "owner", input.ownerPinHash).run();
+
+  await env.DB.prepare(`INSERT OR IGNORE INTO kiosks (id, workspace_id, name, status) VALUES (?, ?, ?, ?)`)
+    .bind(DEFAULT_KIOSK_ID, input.workspaceId, "입구 키오스크", "active")
+    .run();
+}
+
+async function getOwnerPinHash(env?: Env): Promise<string | undefined> {
+  if (!env?.DB) return memoryStore.ownerPinHash;
+
+  const row = await env.DB.prepare(
+    `SELECT owner_pin_hash FROM workspaces WHERE id = ?`
+  ).bind(DEFAULT_WORKSPACE_ID).first<{ owner_pin_hash: string | null }>();
+  return row?.owner_pin_hash ?? undefined;
+}
+
+async function hashOwnerPin(pin: string, workspaceId: string, env?: Env): Promise<string> {
+  return sha256Hex(`${workspaceId}.${pin}.${getQrSecret(env)}`);
 }
 
 async function consumeQrOnScan(
@@ -1006,6 +1071,32 @@ function formatCurrentKoreanDate(): string {
   }).format(new Date());
 }
 
+function renderSetupPage(options: { errorMessage?: string; businessName?: string } = {}): string {
+  const errorBlock = options.errorMessage
+    ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800">${escapeHtml(options.errorMessage)}</div>`
+    : "";
+
+  return `
+    <section data-screen-label="A0 사업자 setup" class="surface-card" style="max-width:520px">
+      <div class="brand-row">${brandMark()}<span class="pill green">처음 설정</span></div>
+      <h1 style="margin:24px 0 0;font-size:34px;line-height:1.12;letter-spacing:-0.045em;color:#171717">사업장 setup</h1>
+      <p style="margin:12px 0 22px;color:#6E6A61;line-height:1.6">사장님 PIN은 고객 사업장 설정에 저장됩니다. 운영 환경 변수로 받지 않습니다.</p>
+      <form method="post" action="/setup" style="display:grid;gap:14px">
+        ${errorBlock}
+        <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
+          사업장 이름
+          <input name="businessName" value="${escapeHtml(options.businessName ?? DEFAULT_WORKSPACE_DISPLAY_NAME)}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+        </label>
+        <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
+          사장님 PIN 4자리
+          <input name="ownerPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="new-password" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+        </label>
+        <button class="button primary" type="submit" style="width:100%;border:0;margin-top:6px">setup 완료</button>
+      </form>
+    </section>
+  `;
+}
+
 function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
   const errorBlock = options.errorMessage
     ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800;margin-top:8px">${escapeHtml(options.errorMessage)}</div>`
@@ -1372,6 +1463,7 @@ async function isAdminAuthorized(authorization: string | undefined, env?: Env, c
     return true;
   }
 
+  if (!(await getOwnerPinHash(env))) return false;
   return isValidAdminSession(cookieHeader, env);
 }
 

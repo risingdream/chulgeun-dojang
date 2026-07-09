@@ -170,10 +170,27 @@ describe("worker app", () => {
     expect(html).toContain("김민지");
   });
 
-  it("unlocks the owner screen with a PIN session cookie", async () => {
+  it("sets the owner PIN during business setup and uses it for the owner session", async () => {
     await recordClockEvent();
 
-    const env = { ADMIN_PIN: "1234", ADMIN_EXPORT_TOKEN: "export-token" };
+    const setupPage = await app.request("/setup");
+    const setupHtml = await setupPage.text();
+
+    expect(setupPage.status).toBe(200);
+    expect(setupHtml).toContain('data-screen-label="A0 사업자 setup"');
+    expect(setupHtml).toContain('name="ownerPin"');
+    expect(setupHtml).not.toContain("ADMIN_PIN");
+
+    const setup = await app.request("/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ businessName: "카페 소소", ownerPin: "1234" })
+    });
+
+    expect(setup.status).toBe(302);
+    expect(setup.headers.get("location")).toBe("/kiosk");
+
+    const env = { ADMIN_PIN: "0000", ADMIN_EXPORT_TOKEN: "export-token" };
     const locked = await app.request("/admin/today", {}, env);
     const lockedHtml = await locked.text();
 
@@ -182,17 +199,18 @@ describe("worker app", () => {
     expect(lockedHtml).toContain('method="post" action="/admin/unlock"');
     expect(lockedHtml).toContain('name="pin"');
     expect(lockedHtml).toContain("data-pin-key");
+    expect(lockedHtml).not.toContain("ADMIN_PIN");
 
-    const wrong = await app.request("/admin/unlock", {
+    const envPinMustBeIgnored = await app.request("/admin/unlock", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ pin: "9999" })
+      body: new URLSearchParams({ pin: "0000" })
     }, env);
-    const wrongHtml = await wrong.text();
+    const wrongHtml = await envPinMustBeIgnored.text();
 
-    expect(wrong.status).toBe(401);
+    expect(envPinMustBeIgnored.status).toBe(401);
     expect(wrongHtml).toContain("PIN이 맞지 않습니다");
-    expect(wrong.headers.get("set-cookie") ?? "").not.toContain("adminSession=");
+    expect(envPinMustBeIgnored.headers.get("set-cookie") ?? "").not.toContain("adminSession=");
 
     const unlock = await app.request("/admin/unlock", {
       method: "POST",

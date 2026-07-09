@@ -61,9 +61,9 @@ export PATH="/home/risingdream/.bun/bin:$PATH"
 # 실제 운영 배포: Cloudflare 로그인 또는 CLOUDFLARE_API_TOKEN 필요
 bunx wrangler d1 create chulgeun-dojang --location apac
 bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0001_initial.sql
+bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0002_workspace_owner_pin.sql
 bunx wrangler secret put QR_SECRET
 bunx wrangler secret put ADMIN_EXPORT_TOKEN
-bunx wrangler secret put ADMIN_PIN
 bun run deploy
 
 # 인증 전 임시 테스트 배포
