@@ -38,30 +38,36 @@ describe("worker app", () => {
     expect(html).toContain("/kiosk");
   });
 
-  it("renders the production kiosk with a scan link but no public recent records", async () => {
+  it("renders the kiosk from the provided A1 screen, with a scan link but no public recent records", async () => {
     await recordClockEvent();
 
     const response = await app.request("/kiosk");
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain("출근도장 키오스크");
+    expect(html).toContain('data-screen-label="A1 키오스크 태블릿 정상"');
+    expect(html).toContain("width:960px;height:620px");
     expect(html).toContain("/scan?token=");
-    expect(html).toContain("30초");
+    expect(html).toContain("새 큐알까지 60초");
+    expect(html).toContain("화면을 두 번 탭하면 전체 화면으로 전환됩니다");
     expect(html).not.toContain("최근 기록");
-    expect(html).not.toContain("직원 A</strong>");
+    expect(html).not.toContain("김민지</strong>");
+    expect(html).not.toContain("상태 안내");
   });
 
-  it("renders first-time scan with remembered-device and location consent copy", async () => {
+  it("renders first-time scan using the provided 2a and B3 screens", async () => {
     const token = await createToken(`first-device-${crypto.randomUUID()}`);
     const response = await app.request(`/scan?token=${encodeURIComponent(token)}`);
     const html = await response.text();
 
     expect(response.status).toBe(200);
+    expect(html).toContain('data-screen-label="2a 기기 기억 첫 1회"');
+    expect(html).toContain('data-screen-label="B3 위치 권한 안내"');
+    expect(html).toContain("처음이시네요. 이름을 한 번만 선택해주세요.");
     expect(html).toContain("이 폰 기억하기");
     expect(html).toContain("기록하는 순간의 위치 1회만 저장");
     expect(html).toContain("이동 경로는 수집하지 않습니다");
-    expect(html).toContain("직원 A");
+    expect(html).toContain("김민지");
     expect(html).toContain("출근");
     expect(html).toContain("퇴근");
   });
@@ -74,10 +80,12 @@ describe("worker app", () => {
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain("직원 B 님");
+    expect(html).toContain('data-screen-label="2a 기기 기억 매일"');
+    expect(html).toContain("박서준 님, 안녕하세요");
     expect(html).toContain('name="employeeId" value="employee-b"');
+    expect(html).toContain("내가 아니에요 — 이름 선택으로");
     expect(html).not.toContain("이 폰 기억하기");
-    expect(html).not.toContain("직원 A</span>");
+    expect(html).not.toContain("김민지</span>");
   });
 
   it("consumes a qr token on first scan and rejects replay scans", async () => {
@@ -92,12 +100,14 @@ describe("worker app", () => {
     const secondHtml = await second.text();
 
     expect(second.status).toBe(409);
-    expect(secondHtml).toContain("이미 갱신된 큐알");
+    expect(secondHtml).toContain('data-screen-label="B7 큐알 재사용 차단"');
+    expect(secondHtml).toContain("이미 사용된 큐알입니다");
   });
 
   it("sets remembered-device cookie and allows clearing it", async () => {
     const { html, headers } = await recordClockEvent({ rememberEmployee: "true" });
 
+    expect(html).toContain('data-screen-label="B4 기록 완료"');
     expect(html).toContain("기억 해제");
     expect(headers.get("set-cookie")).toContain("rememberedEmployeeId=employee-a");
 
@@ -138,7 +148,7 @@ describe("worker app", () => {
 
     expect(authorized.status).toBe(200);
     expect(html).toContain("오늘 기록");
-    expect(html).toContain("직원 A");
+    expect(html).toContain("김민지");
   });
 
   it("rejects csv export without the admin token", async () => {
@@ -162,7 +172,7 @@ describe("worker app", () => {
     expect(response.headers.get("content-type")).toContain("text/csv");
     expect(response.headers.get("content-disposition")).toContain("attendance-default-workspace");
     expect(csv).toContain("기록시각,사업장,직원,유형,키오스크,위험표시");
-    expect(csv).toContain("직원 A");
+    expect(csv).toContain("김민지");
     expect(csv).toContain("출근");
     expect(csv).not.toContain("qr_nonce_hash");
   });
