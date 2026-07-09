@@ -49,9 +49,17 @@ describe("worker app", () => {
     expect(html).toContain("/scan?token=");
     expect(html).toContain("새 큐알까지 60초");
     expect(html).toContain("화면을 두 번 탭하면 전체 화면으로 전환됩니다");
+    expect(html).toContain("width:100vw");
+    expect(html).toContain("height:100dvh");
+    expect(html).toContain("min-height:100vh");
+    expect(html).toContain("main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding: 0; }");
+    expect(html).toContain("requestFullscreen");
+    expect(html).toContain("document.addEventListener('dblclick', enterFullscreen)");
     expect(html).not.toContain("phone-device");
     expect(html).not.toContain("background:#101216");
     expect(html).not.toContain("width:960px;height:620px");
+    expect(html).not.toContain("width:min(1120px,100%)");
+    expect(html).not.toContain("border-radius:22px");
     expect(html).not.toContain("최근 기록");
     expect(html).not.toContain("김민지</strong>");
     expect(html).not.toContain("상태 안내");

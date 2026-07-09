@@ -568,7 +568,7 @@ function renderKioskPage(input: { scanUrl: string }): string {
   const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${encodeURIComponent(input.scanUrl)}`;
 
   return `
-    <div data-screen-label="A1 키오스크 태블릿 정상" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
+    <div data-screen-label="A1 키오스크 태블릿 정상" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -647,6 +647,18 @@ function renderKioskScript(): string {
         }
         tick();
         setInterval(tick, 1000);
+
+        function enterFullscreen() {
+          const target = document.documentElement;
+          if (!document.fullscreenElement && target.requestFullscreen) target.requestFullscreen().catch(() => {});
+        }
+        document.addEventListener('dblclick', enterFullscreen);
+        let lastTap = 0;
+        document.addEventListener('touchend', () => {
+          const now = Date.now();
+          if (now - lastTap < 420) enterFullscreen();
+          lastTap = now;
+        }, { passive: true });
       })();
     </script>
   `;
@@ -940,7 +952,7 @@ function formatCurrentKoreanDate(): string {
 
 function renderAdminPinPage(): string {
   return `
-    <div data-screen-label="A6 사장님 확인 PIN" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
+    <div data-screen-label="A6 사장님 확인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -976,7 +988,7 @@ function renderAdminPinPage(): string {
 
 function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockIns: number; clockOuts: number; flagged: number }): string {
   return `
-    <div data-screen-label="A7 사장님 열람 오늘 기록" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
+    <div data-screen-label="A7 사장님 열람 오늘 기록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:10px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -1084,7 +1096,7 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
       :root { color-scheme: light; font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; background: #E9EAEE; color: #22262B; }
       * { box-sizing: border-box; }
       body { margin: 0; min-height: 100vh; background: #E9EAEE; }
-      main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 44px 48px; }
+      main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding: 0; }
       button, input { font: inherit; }
       [hidden] { display: none !important; }
       a { -webkit-tap-highlight-color: transparent; }
