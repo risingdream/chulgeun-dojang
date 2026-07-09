@@ -55,6 +55,9 @@ describe("worker app", () => {
     expect(html).toContain("main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding: 0; }");
     expect(html).toContain("requestFullscreen");
     expect(html).toContain("document.addEventListener('dblclick', enterFullscreen)");
+    expect(html).toContain("data-admin-hold-link");
+    expect(html).toContain("const adminHoldMs = 3000");
+    expect(html).toContain("window.location.href = '/admin/today'");
     expect(html).not.toContain("phone-device");
     expect(html).not.toContain("background:#101216");
     expect(html).not.toContain("width:960px;height:620px");
@@ -165,6 +168,56 @@ describe("worker app", () => {
     expect(authorized.status).toBe(200);
     expect(html).toContain("오늘 기록");
     expect(html).toContain("김민지");
+  });
+
+  it("unlocks the owner screen with a PIN session cookie", async () => {
+    await recordClockEvent();
+
+    const env = { ADMIN_PIN: "1234", ADMIN_EXPORT_TOKEN: "export-token" };
+    const locked = await app.request("/admin/today", {}, env);
+    const lockedHtml = await locked.text();
+
+    expect(locked.status).toBe(401);
+    expect(lockedHtml).toContain('data-screen-label="A6 사장님 확인 PIN"');
+    expect(lockedHtml).toContain('method="post" action="/admin/unlock"');
+    expect(lockedHtml).toContain('name="pin"');
+    expect(lockedHtml).toContain("data-pin-key");
+
+    const wrong = await app.request("/admin/unlock", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ pin: "9999" })
+    }, env);
+    const wrongHtml = await wrong.text();
+
+    expect(wrong.status).toBe(401);
+    expect(wrongHtml).toContain("PIN이 맞지 않습니다");
+    expect(wrong.headers.get("set-cookie") ?? "").not.toContain("adminSession=");
+
+    const unlock = await app.request("/admin/unlock", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ pin: "1234" })
+    }, env);
+    const cookie = unlock.headers.get("set-cookie") ?? "";
+
+    expect(unlock.status).toBe(302);
+    expect(unlock.headers.get("location")).toBe("/admin/today");
+    expect(cookie).toContain("adminSession=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("Max-Age=60");
+
+    const unlocked = await app.request("/admin/today", { headers: { cookie } }, env);
+    const unlockedHtml = await unlocked.text();
+
+    expect(unlocked.status).toBe(200);
+    expect(unlockedHtml).toContain("오늘 기록");
+    expect(unlockedHtml).toContain("CSV 내려받기");
+    expect(unlockedHtml).toContain("김민지");
+
+    const csv = await app.request("/admin/export.csv", { headers: { cookie } }, env);
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get("content-type")).toContain("text/csv");
   });
 
   it("rejects csv export without the admin token", async () => {

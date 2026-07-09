@@ -45,7 +45,7 @@ bun run dev
 
 ## 기록 내려받기
 
-관리자 토큰을 가진 요청만 CSV를 내려받을 수 있습니다.
+사장님 화면에서 3초 길게 누른 뒤 PIN을 입력하면 오늘 기록을 보고 CSV를 내려받을 수 있습니다. 서버 자동화나 운영 점검은 관리자 토큰으로도 CSV를 받을 수 있습니다.
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_EXPORT_TOKEN" \
@@ -63,6 +63,7 @@ bunx wrangler d1 create chulgeun-dojang --location apac
 bunx wrangler d1 execute chulgeun-dojang --remote --file migrations/0001_initial.sql
 bunx wrangler secret put QR_SECRET
 bunx wrangler secret put ADMIN_EXPORT_TOKEN
+bunx wrangler secret put ADMIN_PIN
 bun run deploy
 
 # 인증 전 임시 테스트 배포

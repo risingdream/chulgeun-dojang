@@ -8,6 +8,12 @@ type Env = {
   APP_NAME?: string;
   QR_SECRET?: string;
   ADMIN_EXPORT_TOKEN?: string;
+  ADMIN_PIN?: string;
+};
+
+type AdminPinPageOptions = {
+  errorMessage?: string;
+  setupMissing?: boolean;
 };
 
 type ClockEventType = "clock_in" | "clock_out" | "break_start" | "break_end";
@@ -47,6 +53,8 @@ const QR_TTL_SECONDS = 60;
 const LOCAL_SECRET = "local-dev-secret";
 const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
 const REMEMBERED_EMPLOYEE_MAX_AGE = 60 * 60 * 24 * 365;
+const ADMIN_SESSION_COOKIE = "adminSession";
+const ADMIN_SESSION_SECONDS = 60;
 const seedEmployees = [
   { id: "employee-a", name: "김민지", codeHash: "employee-a-code" },
   { id: "employee-b", name: "박서준", codeHash: "employee-b-code" },
@@ -265,7 +273,7 @@ app.get("/events", async (context) => {
 });
 
 app.get("/admin/today", async (context) => {
-  if (!isAdminAuthorized(context.req.header("authorization"), context.env)) {
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
     return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage() }), 401);
   }
 
@@ -280,10 +288,37 @@ app.get("/admin/today", async (context) => {
   }));
 });
 
+app.post("/admin/unlock", async (context) => {
+  const adminPin = context.env?.ADMIN_PIN;
+  if (!adminPin) {
+    return context.html(layout({
+      title: "사장님 확인",
+      body: renderAdminPinPage({ setupMissing: true, errorMessage: "관리자 PIN이 아직 설정되지 않았습니다" })
+    }), 503);
+  }
+
+  const body = await context.req.parseBody();
+  const pin = stringField(body.pin).trim();
+  if (!timingSafeEqual(pin, adminPin)) {
+    return context.html(layout({
+      title: "사장님 확인",
+      body: renderAdminPinPage({ errorMessage: "PIN이 맞지 않습니다" })
+    }), 401);
+  }
+
+  context.header("Set-Cookie", await buildAdminSessionCookie(context.env, context.req.url));
+  return context.redirect("/admin/today", 302);
+});
+
+app.get("/admin/lock", (context) => {
+  context.header("Set-Cookie", clearAdminSessionCookie(context.req.url));
+  return context.redirect("/kiosk", 302);
+});
+
 app.get("/admin/demo/export.csv", (context) => context.redirect("/admin/export.csv", 302));
 
 app.get("/admin/export.csv", async (context) => {
-  if (!isAdminAuthorized(context.req.header("authorization"), context.env)) {
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
     return context.text("관리자 인증이 필요합니다", 401);
   }
 
@@ -605,7 +640,7 @@ function renderKioskPage(input: { scanUrl: string }): string {
           </div>
           <div style="display:flex;justify-content:space-between;gap:16px;padding:13px 28px;border-top:1px solid #E8E1D3;font-size:13px;color:#8A8478;background:#FFFDF8">
             <span>화면을 두 번 탭하면 전체 화면으로 전환됩니다</span>
-            <a href="/admin/today" style="color:#8A8478;text-decoration:none">사장님 열람: 여기를 3초 길게 누르세요</a>
+            <a data-admin-hold-link href="/admin/today" style="color:#8A8478;text-decoration:none;user-select:none;touch-action:none">사장님 열람: 여기를 3초 길게 누르세요</a>
           </div>
       ${renderKioskScript()}
     </div>
@@ -659,6 +694,27 @@ function renderKioskScript(): string {
           if (now - lastTap < 420) enterFullscreen();
           lastTap = now;
         }, { passive: true });
+
+        const adminHoldLink = document.querySelector('[data-admin-hold-link]');
+        const adminHoldMs = 3000;
+        let adminHoldTimer;
+        function startAdminHold(event) {
+          event.preventDefault();
+          adminHoldTimer = window.setTimeout(() => {
+            window.location.href = '/admin/today';
+          }, adminHoldMs);
+        }
+        function cancelAdminHold() {
+          if (adminHoldTimer) window.clearTimeout(adminHoldTimer);
+          adminHoldTimer = undefined;
+        }
+        if (adminHoldLink) {
+          adminHoldLink.addEventListener('click', (event) => event.preventDefault());
+          adminHoldLink.addEventListener('pointerdown', startAdminHold);
+          adminHoldLink.addEventListener('pointerup', cancelAdminHold);
+          adminHoldLink.addEventListener('pointerleave', cancelAdminHold);
+          adminHoldLink.addEventListener('pointercancel', cancelAdminHold);
+        }
       })();
     </script>
   `;
@@ -950,7 +1006,15 @@ function formatCurrentKoreanDate(): string {
   }).format(new Date());
 }
 
-function renderAdminPinPage(): string {
+function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
+  const errorBlock = options.errorMessage
+    ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800;margin-top:8px">${escapeHtml(options.errorMessage)}</div>`
+    : "";
+  const keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "←"].map((key) => {
+    if (!key) return `<span style="height:56px"></span>`;
+    return `<button type="button" data-pin-key="${key}" style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:14px;height:56px;display:grid;place-items:center;font-size:${key === "←" ? "17" : "21"}px;font-weight:700;color:${key === "←" ? "#6E6A61" : "#22262B"}">${key}</button>`;
+  }).join("");
+
   return `
     <div data-screen-label="A6 사장님 확인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
@@ -963,25 +1027,62 @@ function renderAdminPinPage(): string {
             <a href="/kiosk" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
           </div>
           <div style="flex:1;display:grid;place-items:center">
-            <div style="display:flex;flex-direction:column;align-items:center;gap:8px">
+            <form method="post" action="/admin/unlock" data-pin-form style="display:flex;flex-direction:column;align-items:center;gap:8px">
               <div style="width:60px;height:60px;border-radius:50%;background:#F1EBDD;display:grid;place-items:center;color:#8A6D2F;font-size:28px;font-weight:900">잠</div>
               <div style="font-size:24px;font-weight:800;margin-top:6px;color:#17191C">사장님 확인</div>
               <div style="font-size:14.5px;color:#6E6A61">매장 공용 화면이라 PIN 입력이 필요합니다</div>
-              <div style="display:flex;gap:14px;margin-top:10px">
-                <span style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
-                <span style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
-                <span style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
-                <span style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+              ${errorBlock}
+              <input data-pin-input name="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="4" ${options.setupMissing ? "disabled" : ""} style="position:absolute;opacity:0;width:1px;height:1px;pointer-events:none" />
+              <div data-pin-dots style="display:flex;gap:14px;margin-top:10px">
+                <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+                <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+                <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
+                <span data-pin-dot style="width:14px;height:14px;border-radius:50%;border:2px solid #C8C2B4;box-sizing:border-box"></span>
               </div>
               <div style="display:grid;grid-template-columns:repeat(3,76px);gap:10px;justify-content:center;margin-top:14px">
-                ${["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "←"].map((key) => key ? `<div style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:14px;height:56px;display:grid;place-items:center;font-size:${key === "←" ? "17" : "21"}px;font-weight:700;color:${key === "←" ? "#6E6A61" : "#22262B"}">${key}</div>` : `<div style="height:56px"></div>`).join("")}
+                ${keypad}
               </div>
-            </div>
+              <button type="submit" data-pin-submit hidden>열기</button>
+            </form>
           </div>
           <div style="display:flex;justify-content:space-between;gap:16px;padding:14px 28px;border-top:1px solid #E8E1D3;font-size:13px;color:#8A8478;background:#FFFDF8">
             <span>60초 동안 입력이 없으면 키오스크로 돌아갑니다</span>
-            <span>관리자 인증이 필요합니다</span>
+            <span>${options.setupMissing ? "운영 PIN 설정이 필요합니다" : "관리자 인증이 필요합니다"}</span>
           </div>
+          <script>
+            (() => {
+              const form = document.querySelector('[data-pin-form]');
+              const input = document.querySelector('[data-pin-input]');
+              const dots = Array.from(document.querySelectorAll('[data-pin-dot]'));
+              if (!form || !input) return;
+              function renderDots() {
+                dots.forEach((dot, index) => {
+                  dot.style.background = index < input.value.length ? '#C13A2A' : 'transparent';
+                  dot.style.borderColor = index < input.value.length ? '#C13A2A' : '#C8C2B4';
+                });
+              }
+              function pressKey(key) {
+                if (key === '←') input.value = input.value.slice(0, -1);
+                else if (/^[0-9]$/.test(key) && input.value.length < 4) input.value += key;
+                renderDots();
+                if (input.value.length === 4) form.requestSubmit();
+              }
+              form.addEventListener('click', (event) => {
+                const target = event.target;
+                const button = target && target.closest ? target.closest('[data-pin-key]') : null;
+                if (!button) return;
+                pressKey(button.getAttribute('data-pin-key'));
+              });
+              document.addEventListener('keydown', (event) => {
+                if (/^[0-9]$/.test(event.key) || event.key === 'Backspace') {
+                  event.preventDefault();
+                  pressKey(event.key === 'Backspace' ? '←' : event.key);
+                }
+              });
+              window.setTimeout(() => window.location.replace('/kiosk'), ${ADMIN_SESSION_SECONDS * 1000});
+              renderDots();
+            })();
+          </script>
     </div>
   `;
 }
@@ -1001,7 +1102,8 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockI
               <span style="font-size:10px;color:#8A8478">큐알 유지 중</span>
             </div>
             <span style="font-size:12.5px;font-weight:700;color:#6E6A61">60초 후 자동 잠금</span>
-            <a href="/kiosk" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
+            <a href="/admin/export.csv" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#C13A2A;color:#FFFFFF;text-decoration:none">CSV 내려받기</a>
+            <a href="/admin/lock" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
           </div>
           <div style="display:flex;align-items:center;gap:14px;padding:12px 28px">
             <div style="width:34px;height:34px;border-radius:50%;border:1px solid #E0D8C6;background:#FFFFFF;display:grid;place-items:center;font-size:14px;color:#6E6A61">◀</div>
@@ -1210,6 +1312,47 @@ function clearRememberCookie(requestUrl: string): string {
   ].filter(Boolean).join("; ");
 }
 
+async function buildAdminSessionCookie(env: Env | undefined, requestUrl: string): Promise<string> {
+  const expiresAt = Math.floor(Date.now() / 1000) + ADMIN_SESSION_SECONDS;
+  const signature = await signAdminSession(expiresAt, env);
+  return [
+    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(`${expiresAt}.${signature}`)}`,
+    "Path=/admin",
+    `Max-Age=${ADMIN_SESSION_SECONDS}`,
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+function clearAdminSessionCookie(requestUrl: string): string {
+  return [
+    `${ADMIN_SESSION_COOKIE}=`,
+    "Path=/admin",
+    "Max-Age=0",
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+async function signAdminSession(expiresAt: number, env?: Env): Promise<string> {
+  return sha256Hex(`${expiresAt}.${getAdminSessionSecret(env)}`);
+}
+
+async function isValidAdminSession(cookieHeader: string | undefined, env?: Env): Promise<boolean> {
+  const cookieValue = getCookieValue(cookieHeader, ADMIN_SESSION_COOKIE);
+  if (!cookieValue) return false;
+
+  const [expiresAtText, signature] = decodeURIComponent(cookieValue).split(".");
+  const expiresAt = Number(expiresAtText);
+  if (!Number.isFinite(expiresAt) || !signature) return false;
+  if (expiresAt < Math.floor(Date.now() / 1000)) return false;
+
+  const expected = await signAdminSession(expiresAt, env);
+  return timingSafeEqual(signature, expected);
+}
+
 function isHttpsUrl(requestUrl: string): boolean {
   return new URL(requestUrl).protocol === "https:";
 }
@@ -1218,12 +1361,18 @@ function getQrSecret(env?: Env): string {
   return env?.QR_SECRET || LOCAL_SECRET;
 }
 
-function isAdminAuthorized(authorization: string | undefined, env?: Env): boolean {
+function getAdminSessionSecret(env?: Env): string {
+  return env?.ADMIN_EXPORT_TOKEN || env?.QR_SECRET || LOCAL_SECRET;
+}
+
+async function isAdminAuthorized(authorization: string | undefined, env?: Env, cookieHeader?: string): Promise<boolean> {
   const expectedToken = env?.ADMIN_EXPORT_TOKEN;
   const prefix = "Bearer ";
-  if (!expectedToken || !authorization?.startsWith(prefix)) return false;
+  if (expectedToken && authorization?.startsWith(prefix) && timingSafeEqual(authorization.slice(prefix.length), expectedToken)) {
+    return true;
+  }
 
-  return timingSafeEqual(authorization.slice(prefix.length), expectedToken);
+  return isValidAdminSession(cookieHeader, env);
 }
 
 function timingSafeEqual(left: string, right: string): boolean {
