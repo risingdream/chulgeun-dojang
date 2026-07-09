@@ -46,10 +46,12 @@ describe("worker app", () => {
 
     expect(response.status).toBe(200);
     expect(html).toContain('data-screen-label="A1 키오스크 태블릿 정상"');
-    expect(html).toContain("width:960px;height:620px");
     expect(html).toContain("/scan?token=");
     expect(html).toContain("새 큐알까지 60초");
     expect(html).toContain("화면을 두 번 탭하면 전체 화면으로 전환됩니다");
+    expect(html).not.toContain("phone-device");
+    expect(html).not.toContain("background:#101216");
+    expect(html).not.toContain("width:960px;height:620px");
     expect(html).not.toContain("최근 기록");
     expect(html).not.toContain("김민지</strong>");
     expect(html).not.toContain("상태 안내");
@@ -63,6 +65,8 @@ describe("worker app", () => {
     expect(response.status).toBe(200);
     expect(html).toContain('data-screen-label="2a 기기 기억 첫 1회"');
     expect(html).toContain('data-screen-label="B3 위치 권한 안내"');
+    expect(html).not.toContain("phone-device");
+    expect(html).not.toContain("width:402px");
     expect(html).toContain("처음이시네요. 이름을 한 번만 선택해주세요.");
     expect(html).toContain("이 폰 기억하기");
     expect(html).toContain("기록하는 순간의 위치 1회만 저장");
@@ -108,7 +112,11 @@ describe("worker app", () => {
     const { html, headers } = await recordClockEvent({ rememberEmployee: "true" });
 
     expect(html).toContain('data-screen-label="B4 기록 완료"');
+    expect(html).toContain("이 화면은 닫아도 됩니다");
     expect(html).toContain("기억 해제");
+    expect(html).not.toContain("키오스크로 돌아가기");
+    expect(html).not.toContain('href="/kiosk"');
+    expect(html).not.toContain("phone-device");
     expect(headers.get("set-cookie")).toContain("rememberedEmployeeId=employee-a");
 
     const forget = await app.request("/forget-device");

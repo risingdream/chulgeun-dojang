@@ -568,9 +568,7 @@ function renderKioskPage(input: { scanUrl: string }): string {
   const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${encodeURIComponent(input.scanUrl)}`;
 
   return `
-    <div data-screen-label="A1 키오스크 태블릿 정상" style="display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px">
-      <div style="background:#101216;border-radius:30px;padding:18px;box-shadow:0 24px 48px rgba(0,0,0,0.18);width:996px;box-sizing:border-box;max-width:calc(100vw - 24px)">
-        <div style="background:#F7F3EA;border-radius:14px;overflow:hidden;width:960px;height:620px;display:flex;flex-direction:column;max-width:100%">
+    <div data-screen-label="A1 키오스크 태블릿 정상" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -609,8 +607,6 @@ function renderKioskPage(input: { scanUrl: string }): string {
             <span>화면을 두 번 탭하면 전체 화면으로 전환됩니다</span>
             <a href="/admin/today" style="color:#8A8478;text-decoration:none">사장님 열람: 여기를 3초 길게 누르세요</a>
           </div>
-        </div>
-      </div>
       ${renderKioskScript()}
     </div>
   `;
@@ -667,8 +663,8 @@ function renderScanPage(input: {
   const clockStatus = input.rememberedEmployee ? "이 폰 기억됨" : "이름 확인됨";
 
   return `
-    <div class="phone-device">
-      <form method="post" action="/api/clock" data-clock-form style="height:100%;margin:0">
+    <div class="staff-screen">
+      <form method="post" action="/api/clock" data-clock-form style="min-height:inherit;margin:0">
         <input type="hidden" name="token" value="${escapeHtml(input.token)}" />
         <input type="hidden" name="attemptId" value="${escapeHtml(input.attemptId)}" />
         <input type="hidden" name="employeeId" value="${escapeHtml(initialEmployee.id)}" data-employee-id-field />
@@ -688,7 +684,7 @@ function renderScanPage(input: {
 
 function renderFirstVisitPanel(): string {
   return `
-    <section data-screen-label="2a 기기 기억 첫 1회" data-step="select" style="height:100%;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
+    <section data-screen-label="2a 기기 기억 첫 1회" data-step="select" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
         <span style="font-size:13.5px;font-weight:800">출근도장</span>
@@ -721,7 +717,7 @@ function renderClockPanel(input: { employee: (typeof seedEmployees)[number]; hid
     : `<button type="button" data-back-select style="border:0;background:transparent;text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;padding:8px 0;cursor:pointer">내가 아니에요 — 이름 선택으로</button>`;
 
   return `
-    <section data-screen-label="2a 기기 기억 매일" data-step="clock"${input.hiddenAttr} style="height:100%;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
+    <section data-screen-label="2a 기기 기억 매일" data-step="clock"${input.hiddenAttr} style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
         <span style="font-size:13.5px;font-weight:800">출근도장</span>
@@ -749,7 +745,7 @@ function renderClockPanel(input: { employee: (typeof seedEmployees)[number]; hid
 
 function renderLocationPanel(): string {
   return `
-    <section data-screen-label="B3 위치 권한 안내" data-step="location" hidden style="height:100%;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
+    <section data-screen-label="B3 위치 권한 안내" data-step="location" hidden style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
         <span style="font-size:13.5px;font-weight:800">출근도장</span>
@@ -866,19 +862,17 @@ function renderSuccessPage(input: { employeeName: string; eventType: ClockEventT
     : "매장 근처 기록으로 저장되었습니다.";
 
   return `
-    <div class="phone-device">
-      <section data-screen-label="B4 기록 완료" style="height:100%;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
+    <div class="staff-screen">
+      <section data-screen-label="B4 기록 완료" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
         <span style="flex:1"></span>
         <div style="width:92px;height:92px;border-radius:50%;background:${stampBg};display:grid;place-items:center;color:${stampColor};font-size:38px;font-weight:900;border:6px solid #FFFFFF;box-shadow:0 12px 26px rgba(52,38,18,0.10)">도장</div>
         <h1 style="margin:22px 0 0;font-size:26px;font-weight:800;line-height:1.3;color:#17191C">${actionLabel} 기록 완료</h1>
         <div style="font-size:15px;color:#6E6A61;line-height:1.65;margin-top:10px"><strong style="color:#22262B">${escapeHtml(input.employeeName)}</strong> 님의 ${actionLabel} 기록이 저장됐습니다.<br>${escapeHtml(note)}</div>
         <div style="background:${hasRisk ? "#FCF6E8" : "#FFFFFF"};border:1px solid ${hasRisk ? "#EBDDB9" : "#E8E1D3"};border-radius:14px;padding:13px 16px;font-size:13.5px;color:${hasRisk ? "#93610F" : "#217A4B"};font-weight:800;margin-top:22px">${escapeHtml(riskText)}</div>
         <span style="flex:1"></span>
-        <div style="display:flex;flex-direction:column;gap:9px;width:100%">
-          <a href="/kiosk" style="background:#C13A2A;color:#FFFFFF;text-decoration:none;border-radius:16px;min-height:56px;display:grid;place-items:center;font-size:16.5px;font-weight:800">키오스크로 돌아가기</a>
-          <a href="/forget-device" style="text-decoration:none;text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;padding:8px 0">기억 해제</a>
-        </div>
-        <div style="text-align:center;font-size:11.5px;color:#8A8478;margin-top:2px">다음 버전에서는 패스키로 더 강하게 확인합니다</div>
+        <div style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:16px;padding:15px 18px;font-size:15px;font-weight:800;color:#22262B;width:100%">이 화면은 닫아도 됩니다</div>
+        <a href="/forget-device" style="text-decoration:none;text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;padding:10px 0">기억 해제</a>
+        <div style="text-align:center;font-size:11.5px;color:#8A8478;margin-top:2px">키오스크 화면은 매장 태블릿 전용입니다</div>
       </section>
     </div>
   `;
@@ -911,8 +905,8 @@ function renderPhoneNoticePage(title: string, detail: string, hint: string, scre
   const footer = tone === "block" ? "반복된 재사용 시도는 흔적으로 남습니다" : "이번 시도는 기록되지 않았습니다";
 
   return `
-    <div class="phone-device">
-      <section data-screen-label="${screenLabel}" style="height:100%;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
+    <div class="staff-screen">
+      <section data-screen-label="${screenLabel}" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
         <span style="flex:1"></span>
         <div style="width:68px;height:68px;border-radius:50%;background:${iconBg};display:grid;place-items:center;color:${iconColor};font-size:24px;font-weight:900">${icon}</div>
         <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#17191C">${escapeHtml(title)}</h1>
@@ -946,9 +940,7 @@ function formatCurrentKoreanDate(): string {
 
 function renderAdminPinPage(): string {
   return `
-    <div data-screen-label="A6 사장님 확인 PIN" style="display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px">
-      <div style="background:#101216;border-radius:30px;padding:18px;box-shadow:0 24px 48px rgba(0,0,0,0.18);width:996px;box-sizing:border-box;max-width:calc(100vw - 24px)">
-        <div style="background:#F7F3EA;border-radius:14px;overflow:hidden;width:960px;height:620px;display:flex;flex-direction:column;max-width:100%">
+    <div data-screen-label="A6 사장님 확인 PIN" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -978,17 +970,13 @@ function renderAdminPinPage(): string {
             <span>60초 동안 입력이 없으면 키오스크로 돌아갑니다</span>
             <span>관리자 인증이 필요합니다</span>
           </div>
-        </div>
-      </div>
     </div>
   `;
 }
 
 function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockIns: number; clockOuts: number; flagged: number }): string {
   return `
-    <div data-screen-label="A7 사장님 열람 오늘 기록" style="display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px">
-      <div style="background:#101216;border-radius:30px;padding:18px;box-shadow:0 24px 48px rgba(0,0,0,0.18);width:996px;box-sizing:border-box;max-width:calc(100vw - 24px)">
-        <div style="background:#F7F3EA;border-radius:14px;overflow:hidden;width:960px;height:620px;display:flex;flex-direction:column;max-width:100%">
+    <div data-screen-label="A7 사장님 열람 오늘 기록" style="width:min(1120px,100%);min-height:min(680px,calc(100vh - 40px));background:#F7F3EA;border:1px solid #E8E1D3;border-radius:22px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 18px 42px rgba(93,70,41,.10);scroll-margin-top:16px">
           <div style="display:flex;align-items:center;gap:12px;padding:10px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -1023,8 +1011,6 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockI
             <span>보기 전용 — 정정과 CSV 내려받기는 사장님 화면에서</span>
             <span>닫으면 즉시 잠깁니다</span>
           </div>
-        </div>
-      </div>
     </div>
   `;
 }
@@ -1123,9 +1109,7 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
       .button { display: inline-flex; align-items: center; justify-content: center; min-height: 50px; padding: 0 18px; border: 1px solid #D8CDBB; border-radius: 15px; color: #3C424A; background: #FFFFFF; text-decoration: none; font-weight: 900; }
       .button.primary { background: #C13A2A; border-color: #C13A2A; color: #FFFFFF; }
       .button.ghost { background: #FDFBF6; color: #6E6A61; }
-      .phone-device { width: 402px; height: 874px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); border-radius: 48px; background: #FDFBF6; overflow: hidden; position: relative; box-shadow: 0 24px 48px rgba(0,0,0,0.18); }
-      .phone-device::before { content: ''; position: absolute; left: 50%; top: 14px; transform: translateX(-50%); width: 118px; height: 34px; border-radius: 999px; background: #0F1115; z-index: 3; }
-      .phone-device::after { content: ''; position: absolute; left: 50%; bottom: 9px; transform: translateX(-50%); width: 136px; height: 5px; border-radius: 999px; background: #17191C; opacity: .9; z-index: 3; }
+      .staff-screen { width: min(430px, 100%); min-height: min(760px, calc(100vh - 24px)); border-radius: 24px; background: #FDFBF6; overflow: hidden; position: relative; box-shadow: 0 18px 42px rgba(93,70,41,.12); border: 1px solid #E8E1D3; }
       .event-list { display: grid; gap: 10px; }
       .event-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: #FFF8ED; color: #3C424A; }
       .event-row em { color: #9F2E22; font-style: normal; font-weight: 800; }
@@ -1133,7 +1117,7 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
       .summary-grid div { border: 1px solid #E8E1D3; border-radius: 18px; padding: 18px; background: #FFF8ED; }
       .summary-grid strong { display: block; font-size: 38px; color: #171717; }
       .summary-grid span { color: #6E6A61; font-weight: 800; }
-      @media (max-width: 720px) { main { padding: 12px; justify-content: flex-start; } .flow-strip, .summary-grid { grid-template-columns: 1fr; } .event-row { grid-template-columns: 1fr; } .phone-device { border-radius: 34px; } }
+      @media (max-width: 720px) { main { padding: 12px; justify-content: flex-start; } .flow-strip, .summary-grid { grid-template-columns: 1fr; } .event-row { grid-template-columns: 1fr; } .staff-screen { border-radius: 20px; } }
     </style>
   </head>
   <body><main>${input.body}</main></body>
