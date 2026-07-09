@@ -130,9 +130,13 @@ describe("worker app", () => {
     expect(html).toContain("main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding: 0; }");
     expect(html).toContain("requestFullscreen");
     expect(html).toContain("document.addEventListener('dblclick', enterFullscreen)");
-    expect(html).toContain("data-admin-hold-link");
-    expect(html).toContain("const adminHoldMs = 3000");
-    expect(html).toContain("window.location.href = '/admin/today'");
+    expect(html).toContain("data-admin-view-link");
+    expect(html).toContain('href="/admin/today"');
+    expect(html).toContain("사장님 열람");
+    expect(html).not.toContain("3초 길게");
+    expect(html).not.toContain("data-admin-hold-link");
+    expect(html).not.toContain("const adminHoldMs");
+    expect(html).not.toContain("event.preventDefault()");
     expect(html).not.toContain("phone-device");
     expect(html).not.toContain("background:#101216");
     expect(html).not.toContain("width:960px;height:620px");

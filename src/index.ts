@@ -881,7 +881,7 @@ function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskN
           </div>
           <div style="display:flex;justify-content:space-between;gap:16px;padding:13px 28px;border-top:1px solid #E8E1D3;font-size:13px;color:#8A8478;background:#FFFDF8">
             <span>화면을 두 번 탭하면 전체 화면으로 전환됩니다</span>
-            <a data-admin-hold-link href="/admin/today" style="color:#8A8478;text-decoration:none;user-select:none;touch-action:none">사장님 열람: 여기를 3초 길게 누르세요</a>
+            <a data-admin-view-link href="/admin/today" style="color:#8A8478;text-decoration:none;user-select:none;cursor:pointer">사장님 열람</a>
           </div>
       ${renderKioskScript()}
     </div>
@@ -936,26 +936,6 @@ function renderKioskScript(): string {
           lastTap = now;
         }, { passive: true });
 
-        const adminHoldLink = document.querySelector('[data-admin-hold-link]');
-        const adminHoldMs = 3000;
-        let adminHoldTimer;
-        function startAdminHold(event) {
-          event.preventDefault();
-          adminHoldTimer = window.setTimeout(() => {
-            window.location.href = '/admin/today';
-          }, adminHoldMs);
-        }
-        function cancelAdminHold() {
-          if (adminHoldTimer) window.clearTimeout(adminHoldTimer);
-          adminHoldTimer = undefined;
-        }
-        if (adminHoldLink) {
-          adminHoldLink.addEventListener('click', (event) => event.preventDefault());
-          adminHoldLink.addEventListener('pointerdown', startAdminHold);
-          adminHoldLink.addEventListener('pointerup', cancelAdminHold);
-          adminHoldLink.addEventListener('pointerleave', cancelAdminHold);
-          adminHoldLink.addEventListener('pointercancel', cancelAdminHold);
-        }
       })();
     </script>
   `;
