@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "./index";
 import { createQrToken } from "./domain/qr-token";
 
@@ -19,6 +19,10 @@ async function createToken(nonce: string): Promise<string> {
 }
 
 describe("worker app", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns health status", async () => {
     const response = await app.request("/healthz");
 
@@ -53,6 +57,97 @@ describe("worker app", () => {
     expect(response.headers.get("location")).toBe("/setup");
   });
 
+  it("renders setup controls for address search, map, radius, and kiosk name", async () => {
+    const response = await app.request("/setup");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("data-location-picker");
+    expect(html).toContain("data-address-search-input");
+    expect(html).toContain("주소 검색");
+    expect(html).toContain("지도");
+    expect(html).toContain("현재 위치로 설정");
+    expect(html).toContain('name="latitude"');
+    expect(html).toContain('name="longitude"');
+    expect(html).toContain('name="radiusMeters"');
+    expect(html).toContain('name="kioskName"');
+  });
+
+  it("searches Korean addresses through the location search API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([
+      {
+        display_name: "서울특별시 강남구 테헤란로 123",
+        lat: "37.501274",
+        lon: "127.039585",
+        type: "office"
+      }
+    ]), { headers: { "content-type": "application/json" } }));
+
+    const response = await app.request("/api/location/search?q=" + encodeURIComponent("서울 강남구 테헤란로 123"));
+    const json = await response.json() as { results: Array<{ name: string; latitude: number; longitude: number }> };
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("nominatim.openstreetmap.org/search");
+    expect(json.results[0]).toMatchObject({
+      name: "서울특별시 강남구 테헤란로 123",
+      latitude: 37.501274,
+      longitude: 127.039585
+    });
+  });
+
+  it("falls back to a second geocoder when address search returns no Nominatim results", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        features: [
+          {
+            properties: { name: "서울특별시청", city: "서울", osm_value: "townhall" },
+            geometry: { coordinates: [126.97842, 37.566789] }
+          }
+        ]
+      }), { headers: { "content-type": "application/json" } }));
+
+    const response = await app.request("/api/location/search?q=" + encodeURIComponent("서울특별시청"));
+    const json = await response.json() as { results: Array<{ name: string; latitude: number; longitude: number }> };
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(new URL(String(fetchMock.mock.calls[1]?.[0])).searchParams.get("q")).toBe("서울특별시청 대한민국");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("photon.komoot.io/api");
+    expect(json.results[0]).toMatchObject({
+      name: "서울특별시청 · 서울",
+      latitude: 37.566789,
+      longitude: 126.97842
+    });
+  });
+
+  it("retries Korean address searches with a Korea suffix before external fallback", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        {
+          display_name: "서울특별시청, 110, 세종대로, 서울특별시, 대한민국",
+          lat: "37.5667893",
+          lon: "126.9784204",
+          type: "townhall"
+        }
+      ]), { headers: { "content-type": "application/json" } }));
+
+    const response = await app.request("/api/location/search?q=" + encodeURIComponent("서울특별시청"));
+    const json = await response.json() as { results: Array<{ name: string; latitude: number; longitude: number }> };
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[1]?.[0])).searchParams.get("q")).toBe("서울특별시청 대한민국");
+    expect(json.results[0]).toMatchObject({
+      name: "서울특별시청, 110, 세종대로, 서울특별시, 대한민국",
+      latitude: 37.5667893,
+      longitude: 126.9784204
+    });
+  });
+
   it("does not run default D1 seed writes on every kiosk request", async () => {
     let batchCalls = 0;
     const db = withBatchCounter(
@@ -74,7 +169,7 @@ describe("worker app", () => {
     const setup = await app.request("/setup", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ businessName: "심플랩스", ownerPin: "1234" })
+      body: setupParams()
     }, env);
     const workspaceCookie = setup.headers.get("set-cookie") ?? "";
 
@@ -485,7 +580,7 @@ describe("worker app", () => {
     const setup = await app.request("/setup", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ businessName: "심플랩스", ownerPin: "1234" })
+      body: setupParams()
     });
 
     expect(setup.status).toBe(302);
@@ -561,6 +656,62 @@ describe("worker app", () => {
     expect(csv.headers.get("content-type")).toContain("text/csv");
   });
 
+  it("persists setup location and lets the owner update it from workspace settings", async () => {
+    const db = fakeD1();
+    const env = { DB: db };
+
+    const setup = await app.request("/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: setupParams({ kioskName: "2층 키오스크", latitude: "37.501274", longitude: "127.039585", radiusMeters: "150" })
+    }, env);
+    const workspaceCookie = setup.headers.get("set-cookie") ?? "";
+    expect(setup.status).toBe(302);
+
+    const kioskLogin = await app.request("/kiosk/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: workspaceCookie },
+      body: new URLSearchParams({ pin: "1234" })
+    }, env);
+    const kiosk = await app.request("/kiosk", {
+      headers: { cookie: `${workspaceCookie}; ${kioskLogin.headers.get("set-cookie") ?? ""}` }
+    }, env);
+    const kioskHtml = await kiosk.text();
+    expect(kioskHtml).toContain("2층 키오스크");
+
+    const unlock = await app.request("/admin/unlock", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ pin: "1234" })
+    }, env);
+    const adminCookie = unlock.headers.get("set-cookie") ?? "";
+
+    const settings = await app.request("/admin/workspace", { headers: { cookie: adminCookie } }, env);
+    const settingsHtml = await settings.text();
+    expect(settings.status).toBe(200);
+    expect(settingsHtml).toContain('data-screen-label="B1 사업장 설정"');
+    expect(settingsHtml).toContain('name="kioskName"');
+    expect(settingsHtml).toContain('value="2층 키오스크"');
+    expect(settingsHtml).toContain('value="37.501274"');
+    expect(settingsHtml).toContain('value="127.039585"');
+
+    const save = await app.request("/admin/workspace", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: adminCookie },
+      body: setupParams({ businessName: "심플랩스 본점", kioskName: "입구 태블릿", latitude: "37.502", longitude: "127.04", radiusMeters: "100" })
+    }, env);
+    expect(save.status).toBe(302);
+    expect(save.headers.get("location")).toBe("/admin/workspace?saved=1");
+
+    const updated = await app.request("/admin/workspace", { headers: { cookie: adminCookie } }, env);
+    const updatedHtml = await updated.text();
+    expect(updatedHtml).toContain("심플랩스 본점");
+    expect(updatedHtml).toContain('value="입구 태블릿"');
+    expect(updatedHtml).toContain('value="37.502"');
+    expect(updatedHtml).toContain('value="127.04"');
+    expect(updatedHtml).toContain('value="100" selected');
+  });
+
   it("rejects csv export without the admin token", async () => {
     const response = await app.request("/admin/export.csv");
 
@@ -613,6 +764,18 @@ async function recordClockEvent(options: Record<string, string> = {}): Promise<{
   return { html: await response.text(), headers: response.headers };
 }
 
+function setupParams(overrides: Record<string, string> = {}): URLSearchParams {
+  return new URLSearchParams({
+    businessName: "심플랩스",
+    ownerPin: "1234",
+    kioskName: "입구 키오스크",
+    latitude: "37.4979",
+    longitude: "127.0276",
+    radiusMeters: "80",
+    ...overrides
+  });
+}
+
 function d1WithoutOwnerSetup(): D1Database {
   return {
     batch: async () => [],
@@ -642,12 +805,18 @@ function fakeD1(initial: {
   workspaceName?: string;
   ownerPinHash?: string | null;
   kioskName?: string;
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
   employees?: Array<{ id: string; name: string; codeHash?: string; status?: string }>;
 } = {}): D1Database {
   const state = {
     workspaceName: initial.workspaceName ?? "운영 사업장",
     ownerPinHash: initial.ownerPinHash ?? null,
     kioskName: initial.kioskName ?? "입구 키오스크",
+    latitude: initial.latitude ?? 37.5133,
+    longitude: initial.longitude ?? 127.1002,
+    radiusMeters: initial.radiusMeters ?? 80,
     employees: initial.employees ?? [],
     consumptions: new Map<string, { attemptId: string; completedEmployeeId?: string }>()
   };
@@ -664,7 +833,10 @@ function fakeD1(initial: {
             return {
               workspace_name: state.workspaceName,
               owner_pin_hash: state.ownerPinHash,
-              kiosk_name: state.kioskName
+              kiosk_name: state.kioskName,
+              latitude: state.latitude,
+              longitude: state.longitude,
+              radius_meters: state.radiusMeters
             };
           }
           if (query.includes("FROM employees")) {
@@ -707,7 +879,19 @@ function fakeD1(initial: {
         run: async () => {
           if (query.includes("INSERT INTO workspaces")) {
             state.workspaceName = String(args[1] ?? state.workspaceName);
+            state.latitude = Number(args[2] ?? state.latitude);
+            state.longitude = Number(args[3] ?? state.longitude);
+            state.radiusMeters = Number(args[4] ?? state.radiusMeters);
             state.ownerPinHash = typeof args[6] === "string" ? args[6] : state.ownerPinHash;
+          }
+          if (query.includes("UPDATE workspaces")) {
+            state.workspaceName = String(args[0] ?? state.workspaceName);
+            state.latitude = Number(args[1] ?? state.latitude);
+            state.longitude = Number(args[2] ?? state.longitude);
+            state.radiusMeters = Number(args[3] ?? state.radiusMeters);
+          }
+          if (query.includes("INSERT INTO kiosks")) {
+            state.kioskName = String(args[2] ?? state.kioskName);
           }
           if (query.includes("INSERT INTO qr_consumptions")) {
             state.consumptions.set(String(args[0]), { attemptId: String(args[3]) });

@@ -22,6 +22,30 @@ type WorkspaceDisplay = {
   kioskName: string;
 };
 
+type WorkspaceSettings = WorkspaceDisplay & WorkspaceLocation;
+
+type LocationSearchResult = {
+  name: string;
+  latitude: number;
+  longitude: number;
+  type?: string;
+};
+
+type WorkspaceSetupInput = {
+  workspaceId: string;
+  businessName: string;
+  kioskName: string;
+  ownerPinHash: string;
+  location: WorkspaceLocation;
+};
+
+type WorkspaceSettingsInput = {
+  workspaceId: string;
+  businessName: string;
+  kioskName: string;
+  location: WorkspaceLocation;
+};
+
 type WorkspaceLocation = {
   latitude: number;
   longitude: number;
@@ -68,6 +92,8 @@ const DEFAULT_WORKSPACE_ID = "default-workspace";
 const DEFAULT_KIOSK_ID = "main-kiosk";
 const DEFAULT_WORKSPACE_DISPLAY_NAME = "사업장";
 const DEFAULT_KIOSK_DISPLAY_NAME = "키오스크";
+const DEFAULT_WORKSPACE_LOCATION: WorkspaceLocation = { latitude: 37.5133, longitude: 127.1002, radiusMeters: 80 };
+const ALLOWED_RADIUS_METERS = [50, 80, 100, 150];
 const QR_TTL_SECONDS = 60;
 const LOCAL_SECRET = "local-dev-secret";
 const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
@@ -93,8 +119,9 @@ const memoryStore = {
   events: [] as AttendanceEventRecord[],
   employees: localDemoEmployees.map((employee) => ({ ...employee })),
   workspaceName: DEFAULT_WORKSPACE_DISPLAY_NAME,
+  kioskName: DEFAULT_KIOSK_DISPLAY_NAME,
   ownerPinHash: undefined as string | undefined,
-  location: { latitude: 37.5133, longitude: 127.1002, radiusMeters: 80 } as WorkspaceLocation
+  location: { ...DEFAULT_WORKSPACE_LOCATION } as WorkspaceLocation
 };
 
 app.onError((error, context) => {
@@ -108,6 +135,14 @@ app.get("/healthz", (context) => {
     service: "chulgeun-dojang",
     storage: context.env?.DB ? "d1" : context.env?.STORE ? "durable_object" : "memory"
   });
+});
+
+app.get("/api/location/search", async (context) => {
+  const query = (context.req.query("q") ?? "").trim();
+  if (query.length < 2) return context.json({ results: [] });
+
+  const results = await searchLocations(query);
+  return context.json({ results });
 });
 
 app.get("/", (context) => {
@@ -179,6 +214,8 @@ app.post("/setup", async (context) => {
   const existingOwnerPinHash = await getOwnerPinHash(context.env);
   const businessName = stringField(body.businessName).trim() || DEFAULT_WORKSPACE_DISPLAY_NAME;
   const ownerPin = stringField(body.ownerPin).trim();
+  const kioskName = stringField(body.kioskName).trim() || DEFAULT_KIOSK_DISPLAY_NAME;
+  const location = parseWorkspaceLocationInput(body) ?? { ...DEFAULT_WORKSPACE_LOCATION };
 
   if (!/^\d{4}$/.test(ownerPin)) {
     return context.html(layout({
@@ -208,6 +245,8 @@ app.post("/setup", async (context) => {
   await saveWorkspaceSetup(context.env, {
     workspaceId: DEFAULT_WORKSPACE_ID,
     businessName,
+    kioskName,
+    location,
     ownerPinHash: await hashOwnerPin(ownerPin, DEFAULT_WORKSPACE_ID, context.env)
   });
   context.header("Set-Cookie", await buildWorkspaceTokenCookie(DEFAULT_WORKSPACE_ID, context.env, context.req.url));
@@ -489,6 +528,47 @@ app.get("/admin/lock", (context) => {
   return context.redirect("/kiosk", 302);
 });
 
+app.get("/admin/workspace", async (context) => {
+  const [display, authorized] = await Promise.all([
+    getWorkspaceDisplay(context.env),
+    isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie"))
+  ]);
+  if (!authorized) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const settings = await getWorkspaceSettings(context.env);
+  return context.html(layout({
+    title: "사업장 설정",
+    body: renderWorkspaceSettingsPage(settings, context.req.query("saved") === "1")
+  }));
+});
+
+app.post("/admin/workspace", async (context) => {
+  const [display, authorized] = await Promise.all([
+    getWorkspaceDisplay(context.env),
+    isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie"))
+  ]);
+  if (!authorized) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const body = await context.req.parseBody();
+  const businessName = stringField(body.businessName).trim() || display.workspaceName || DEFAULT_WORKSPACE_DISPLAY_NAME;
+  const kioskName = stringField(body.kioskName).trim() || DEFAULT_KIOSK_DISPLAY_NAME;
+  const location = parseWorkspaceLocationInput(body);
+  if (!location) {
+    const settings = await getWorkspaceSettings(context.env);
+    return context.html(layout({
+      title: "사업장 설정",
+      body: renderWorkspaceSettingsPage({ ...settings, workspaceName: businessName, kioskName }, false, "근무지역 위치를 주소 검색, 지도, 현재 위치 중 하나로 지정해주세요")
+    }), 400);
+  }
+
+  await saveWorkspaceSettings(context.env, { workspaceId: DEFAULT_WORKSPACE_ID, businessName, kioskName, location });
+  return context.redirect("/admin/workspace?saved=1", 302);
+});
+
 
 app.get("/admin/employees", async (context) => {
   const display = await getWorkspaceDisplay(context.env);
@@ -589,23 +669,61 @@ app.get("/admin/export.csv", async (context) => {
 
 async function saveWorkspaceSetup(
   env: Env | undefined,
-  input: { workspaceId: string; businessName: string; ownerPinHash: string }
+  input: WorkspaceSetupInput
 ): Promise<void> {
   if (!env?.DB) {
     memoryStore.workspaceName = input.businessName;
+    memoryStore.kioskName = input.kioskName;
     memoryStore.ownerPinHash = input.ownerPinHash;
+    memoryStore.location = input.location;
     return;
   }
 
   await env.DB.prepare(
     `INSERT INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash, owner_pin_hash)
      VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET name = excluded.name, owner_pin_hash = excluded.owner_pin_hash`
-  ).bind(input.workspaceId, input.businessName, 37.5133, 127.1002, 80, "owner", input.ownerPinHash).run();
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       latitude = excluded.latitude,
+       longitude = excluded.longitude,
+       radius_meters = excluded.radius_meters,
+       owner_pin_hash = excluded.owner_pin_hash`
+  ).bind(
+    input.workspaceId,
+    input.businessName,
+    input.location.latitude,
+    input.location.longitude,
+    input.location.radiusMeters,
+    "owner",
+    input.ownerPinHash
+  ).run();
 
-  await env.DB.prepare(`INSERT OR IGNORE INTO kiosks (id, workspace_id, name, status) VALUES (?, ?, ?, ?)`)
-    .bind(DEFAULT_KIOSK_ID, input.workspaceId, "입구 키오스크", "active")
-    .run();
+  await env.DB.prepare(
+    `INSERT INTO kiosks (id, workspace_id, name, status)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status`
+  ).bind(DEFAULT_KIOSK_ID, input.workspaceId, input.kioskName, "active").run();
+}
+
+async function saveWorkspaceSettings(env: Env | undefined, input: WorkspaceSettingsInput): Promise<void> {
+  if (!env?.DB) {
+    memoryStore.workspaceName = input.businessName;
+    memoryStore.kioskName = input.kioskName;
+    memoryStore.location = input.location;
+    return;
+  }
+
+  await env.DB.prepare(
+    `UPDATE workspaces
+     SET name = ?, latitude = ?, longitude = ?, radius_meters = ?
+     WHERE id = ?`
+  ).bind(input.businessName, input.location.latitude, input.location.longitude, input.location.radiusMeters, input.workspaceId).run();
+
+  await env.DB.prepare(
+    `INSERT INTO kiosks (id, workspace_id, name, status)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status`
+  ).bind(DEFAULT_KIOSK_ID, input.workspaceId, input.kioskName, "active").run();
 }
 
 async function getOwnerPinHash(env?: Env): Promise<string | undefined> {
@@ -625,7 +743,7 @@ async function getWorkspaceDisplay(
   if (!env?.DB) {
     return {
       workspaceName: memoryStore.workspaceName || DEFAULT_WORKSPACE_DISPLAY_NAME,
-      kioskName: DEFAULT_KIOSK_DISPLAY_NAME
+      kioskName: memoryStore.kioskName || DEFAULT_KIOSK_DISPLAY_NAME
     };
   }
 
@@ -643,6 +761,39 @@ async function getWorkspaceDisplay(
   return {
     workspaceName: row?.owner_pin_hash ? row.workspace_name?.trim() || DEFAULT_WORKSPACE_DISPLAY_NAME : DEFAULT_WORKSPACE_DISPLAY_NAME,
     kioskName: row?.kiosk_name?.trim() || DEFAULT_KIOSK_DISPLAY_NAME
+  };
+}
+
+async function getWorkspaceSettings(env: Env | undefined, workspaceId = DEFAULT_WORKSPACE_ID, kioskId = DEFAULT_KIOSK_ID): Promise<WorkspaceSettings> {
+  if (!env?.DB) {
+    return {
+      workspaceName: memoryStore.workspaceName || DEFAULT_WORKSPACE_DISPLAY_NAME,
+      kioskName: memoryStore.kioskName || DEFAULT_KIOSK_DISPLAY_NAME,
+      latitude: memoryStore.location.latitude,
+      longitude: memoryStore.location.longitude,
+      radiusMeters: memoryStore.location.radiusMeters
+    };
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT w.name AS workspace_name, w.latitude, w.longitude, w.radius_meters, k.name AS kiosk_name
+     FROM workspaces w
+     LEFT JOIN kiosks k ON k.workspace_id = w.id AND k.id = ?
+     WHERE w.id = ?`
+  ).bind(kioskId, workspaceId).first<{
+    workspace_name: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    radius_meters: number | null;
+    kiosk_name: string | null;
+  }>();
+
+  return {
+    workspaceName: row?.workspace_name?.trim() || DEFAULT_WORKSPACE_DISPLAY_NAME,
+    kioskName: row?.kiosk_name?.trim() || DEFAULT_KIOSK_DISPLAY_NAME,
+    latitude: row?.latitude ?? DEFAULT_WORKSPACE_LOCATION.latitude,
+    longitude: row?.longitude ?? DEFAULT_WORKSPACE_LOCATION.longitude,
+    radiusMeters: normalizeRadiusMeters(row?.radius_meters ?? DEFAULT_WORKSPACE_LOCATION.radiusMeters)
   };
 }
 
@@ -1528,9 +1679,10 @@ function formatCurrentKoreanDate(): string {
   }).format(new Date());
 }
 
-function renderSetupPage(options: { errorMessage?: string; businessName?: string; mode?: "create" | "connect" } = {}): string {
+function renderSetupPage(options: { errorMessage?: string; businessName?: string; kioskName?: string; location?: WorkspaceLocation; mode?: "create" | "connect" } = {}): string {
   const mode = options.mode ?? "create";
   const isConnect = mode === "connect";
+  const location = options.location ?? DEFAULT_WORKSPACE_LOCATION;
   const errorBlock = options.errorMessage
     ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800">${escapeHtml(options.errorMessage)}</div>`
     : "";
@@ -1540,22 +1692,189 @@ function renderSetupPage(options: { errorMessage?: string; businessName?: string
           사업장 이름
           <input name="businessName" value="${escapeHtml(options.businessName ?? "")}" placeholder="예: 우리 매장" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
         </label>`;
+  const locationBlock = isConnect ? "" : renderLocationPicker({
+    kioskName: options.kioskName ?? "입구 키오스크",
+    location,
+    compact: true
+  });
 
   return `
-    <section data-screen-label="A0 사업자 setup" class="surface-card" style="max-width:520px">
+    <section data-screen-label="A0 사업자 setup" class="surface-card" style="max-width:${isConnect ? "520" : "940"}px">
       <div class="brand-row">${brandMark()}<span class="pill green">${isConnect ? "기기 연결" : "처음 설정"}</span></div>
       <h1 style="margin:24px 0 0;font-size:34px;line-height:1.12;letter-spacing:-0.045em;color:#171717">${isConnect ? "이 기기 연결" : "사업장 setup"}</h1>
-      <p style="margin:12px 0 22px;color:#6E6A61;line-height:1.6">${isConnect ? "이 브라우저에 사업장 토큰을 저장한 뒤, PIN 로그인으로 키오스크를 엽니다." : "사장님 PIN은 고객 사업장 설정에 저장됩니다. 운영 환경 변수로 받지 않습니다."}</p>
+      <p style="margin:12px 0 22px;color:#6E6A61;line-height:1.6">${isConnect ? "이 브라우저에 사업장 토큰을 저장한 뒤, PIN 로그인으로 키오스크를 엽니다." : "주소 검색이나 현재 위치로 근무지역을 지정하고, 직원 출퇴근 위치를 이 반경으로 확인합니다."}</p>
       <form method="post" action="/setup" style="display:grid;gap:14px">
         ${errorBlock}
-        ${businessNameBlock}
-        <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
-          사장님 PIN 4자리
-          <input name="ownerPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="${isConnect ? "current-password" : "new-password"}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
-        </label>
+        <div style="display:grid;grid-template-columns:${isConnect ? "1fr" : "0.82fr 1.18fr"};gap:18px;align-items:start">
+          <div style="display:grid;gap:14px">
+            ${businessNameBlock}
+            <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
+              사장님 PIN 4자리
+              <input name="ownerPin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="${isConnect ? "current-password" : "new-password"}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+            </label>
+          </div>
+          ${locationBlock}
+        </div>
         <button class="button primary" type="submit" style="width:100%;border:0;margin-top:6px">${isConnect ? "이 기기 연결" : "setup 완료"}</button>
       </form>
     </section>
+  `;
+}
+
+function renderWorkspaceSettingsPage(settings: WorkspaceSettings, saved = false, errorMessage?: string): string {
+  const notice = errorMessage
+    ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:11px 14px;color:#B42318;font-size:13px;font-weight:800">${escapeHtml(errorMessage)}</div>`
+    : saved
+      ? `<div style="background:#E8F3EC;border:1px solid #C8E4D2;border-radius:12px;padding:11px 14px;color:#217A4B;font-size:13px;font-weight:800">사업장 설정을 저장했습니다</div>`
+      : "";
+
+  return `
+    <div data-kiosk-screen data-screen-label="B1 사업장 설정" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;display:flex;flex-direction:column;overflow:auto">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
+        <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
+        <span style="font-size:16px;font-weight:800">출근도장</span>
+        <span style="width:1px;height:16px;background:#E0D8C6"></span>
+        <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(settings.workspaceName)}</span>
+        <span style="background:#C13A2A;color:#FFFFFF;font-size:12px;font-weight:800;padding:5px 11px;border-radius:999px">사업장 설정</span>
+        <span style="flex:1"></span>
+        <a href="/admin/today" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">오늘 기록</a>
+        <a href="/admin/employees" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">직원 관리</a>
+      </div>
+      <form method="post" action="/admin/workspace" style="flex:1;padding:26px 28px;display:grid;grid-template-columns:0.72fr 1.28fr;gap:24px;align-items:start">
+        <section style="background:#FFFDF8;border:1px solid #E8E1D3;border-radius:24px;padding:24px;display:grid;gap:14px">
+          <h1 style="font-size:36px;line-height:1.08;letter-spacing:-0.05em;color:#17191C;margin:0">사업장 설정</h1>
+          <p style="font-size:15px;line-height:1.65;color:#6E6A61;margin:0">근무지역은 직원 폰 위치가 반경 밖인지 판단하는 기준입니다. 주소 검색 후 지도에서 확인하고 저장하세요.</p>
+          ${notice}
+          <label style="display:grid;gap:8px;font-size:13px;font-weight:800;color:#3C424A">사업장 이름
+            <input name="businessName" value="${escapeHtml(settings.workspaceName)}" style="height:54px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFFFF;color:#22262B" />
+          </label>
+          <button type="submit" style="border:0;background:#C13A2A;color:#FFFFFF;border-radius:16px;min-height:56px;font-size:16px;font-weight:900;cursor:pointer">설정 저장</button>
+        </section>
+        ${renderLocationPicker({ kioskName: settings.kioskName, location: settings })}
+      </form>
+    </div>
+  `;
+}
+
+function renderLocationPicker(input: { kioskName: string; location: WorkspaceLocation; compact?: boolean }): string {
+  const location = input.location;
+  const radiusOptions = ALLOWED_RADIUS_METERS.map((radius) => (
+    `<option value="${radius}"${normalizeRadiusMeters(location.radiusMeters) === radius ? " selected" : ""}>${radius}m</option>`
+  )).join("");
+  const mapSrc = osmEmbedUrl(location);
+  const summary = `${formatCoordinate(location.latitude)}, ${formatCoordinate(location.longitude)}`;
+
+  return `
+    <section data-location-picker style="background:#FFFDF8;border:1px solid #E8E1D3;border-radius:24px;padding:${input.compact ? "18" : "24"}px;display:grid;gap:14px">
+      <div style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between">
+        <div>
+          <h2 style="font-size:22px;letter-spacing:-0.035em;color:#17191C;margin:0">근무지역 설정</h2>
+          <p style="font-size:13.5px;line-height:1.55;color:#6E6A61;margin:6px 0 0">주소 검색, 지도, 현재 위치로 기준점을 정합니다.</p>
+        </div>
+        <span style="background:#F7EDD8;color:#93610F;font-size:12px;font-weight:900;padding:6px 10px;border-radius:999px">지도</span>
+      </div>
+      <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">키오스크 이름
+        <input name="kioskName" value="${escapeHtml(input.kioskName)}" placeholder="예: 입구 키오스크" style="height:50px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFFFF;color:#22262B" />
+      </label>
+      <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
+        <input data-address-search-input type="search" placeholder="주소 검색 · 예: 강남구 테헤란로 123" style="height:48px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFFFF;color:#22262B" />
+        <button type="button" data-address-search-button style="height:48px;border:1.5px solid #C13A2A;background:#C13A2A;color:#FFFFFF;border-radius:14px;padding:0 14px;font-weight:900;cursor:pointer">주소 검색</button>
+        <button type="button" data-current-location-button style="height:48px;border:1.5px solid #E0D8C6;background:#FFFFFF;color:#22262B;border-radius:14px;padding:0 14px;font-weight:900;cursor:pointer">현재 위치로 설정</button>
+      </div>
+      <div data-location-results style="display:grid;gap:7px"></div>
+      <iframe data-location-map title="지도" src="${escapeHtml(mapSrc)}" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:${input.compact ? "230" : "360"}px;border:1px solid #E8E1D3;border-radius:18px;background:#E9EAEE"></iframe>
+      <div style="display:grid;grid-template-columns:1fr 1fr 140px;gap:10px">
+        <label style="display:grid;gap:6px;font-size:12px;font-weight:800;color:#6E6A61">위도
+          <input name="latitude" data-location-lat value="${formatCoordinate(location.latitude)}" inputmode="decimal" style="height:44px;border:1px solid #E8E1D3;border-radius:12px;padding:0 12px;background:#FFFFFF;color:#22262B" />
+        </label>
+        <label style="display:grid;gap:6px;font-size:12px;font-weight:800;color:#6E6A61">경도
+          <input name="longitude" data-location-lng value="${formatCoordinate(location.longitude)}" inputmode="decimal" style="height:44px;border:1px solid #E8E1D3;border-radius:12px;padding:0 12px;background:#FFFFFF;color:#22262B" />
+        </label>
+        <label style="display:grid;gap:6px;font-size:12px;font-weight:800;color:#6E6A61">허용 반경
+          <select name="radiusMeters" style="height:44px;border:1px solid #E8E1D3;border-radius:12px;padding:0 12px;background:#FFFFFF;color:#22262B;font-weight:800">${radiusOptions}</select>
+        </label>
+      </div>
+      <div style="font-size:12.5px;color:#8A8478;font-weight:700">선택 위치: <span data-location-summary>${escapeHtml(summary)}</span></div>
+      ${renderLocationPickerScript()}
+    </section>
+  `;
+}
+
+function renderLocationPickerScript(): string {
+  return `
+    <script>
+      (() => {
+        const root = document.querySelector('[data-location-picker]');
+        if (!root || root.dataset.ready === '1') return;
+        root.dataset.ready = '1';
+        const searchInput = root.querySelector('[data-address-search-input]');
+        const searchButton = root.querySelector('[data-address-search-button]');
+        const currentButton = root.querySelector('[data-current-location-button]');
+        const results = root.querySelector('[data-location-results]');
+        const map = root.querySelector('[data-location-map]');
+        const lat = root.querySelector('[data-location-lat]');
+        const lng = root.querySelector('[data-location-lng]');
+        const summary = root.querySelector('[data-location-summary]');
+        function fmt(value) {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) ? String(Math.round(parsed * 1000000) / 1000000) : '';
+        }
+        function mapUrl(latitude, longitude) {
+          const d = 0.003;
+          const bbox = [longitude - d, latitude - d, longitude + d, latitude + d].join(',');
+          return 'https://www.openstreetmap.org/export/embed.html?bbox=' + encodeURIComponent(bbox) + '&layer=mapnik&marker=' + encodeURIComponent(latitude + ',' + longitude);
+        }
+        function setLocation(latitude, longitude, label) {
+          const nextLat = fmt(latitude);
+          const nextLng = fmt(longitude);
+          if (!nextLat || !nextLng) return;
+          lat.value = nextLat;
+          lng.value = nextLng;
+          map.src = mapUrl(Number(nextLat), Number(nextLng));
+          summary.textContent = label ? label + ' · ' + nextLat + ', ' + nextLng : nextLat + ', ' + nextLng;
+        }
+        function renderResults(items) {
+          if (!results) return;
+          if (!items.length) {
+            results.innerHTML = '<div style="padding:10px 12px;border:1px dashed #D8CDBB;border-radius:12px;color:#8A8478;font-size:13px;font-weight:800">검색 결과가 없습니다</div>';
+            return;
+          }
+          results.innerHTML = items.map((item) => '<button type="button" data-location-result data-lat="' + item.latitude + '" data-lng="' + item.longitude + '" data-name="' + item.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '" style="text-align:left;border:1px solid #E8E1D3;background:#FFFFFF;border-radius:12px;padding:10px 12px;color:#22262B;font-size:13px;font-weight:800;cursor:pointer">' + item.name.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</button>').join('');
+        }
+        async function search() {
+          const q = (searchInput && searchInput.value || '').trim();
+          if (q.length < 2) return;
+          results.innerHTML = '<div style="color:#8A8478;font-size:13px;font-weight:800">검색 중...</div>';
+          try {
+            const response = await fetch('/api/location/search?q=' + encodeURIComponent(q));
+            const data = await response.json();
+            renderResults(data.results || []);
+          } catch (error) {
+            results.innerHTML = '<div style="padding:10px 12px;border:1px solid #F2B8AA;border-radius:12px;color:#B42318;font-size:13px;font-weight:800">주소 검색에 실패했습니다</div>';
+          }
+        }
+        searchButton && searchButton.addEventListener('click', search);
+        searchInput && searchInput.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            search();
+          }
+        });
+        results && results.addEventListener('click', (event) => {
+          const button = event.target && event.target.closest ? event.target.closest('[data-location-result]') : null;
+          if (!button) return;
+          setLocation(button.dataset.lat, button.dataset.lng, button.dataset.name || '선택 위치');
+        });
+        currentButton && currentButton.addEventListener('click', () => {
+          if (!navigator.geolocation) return;
+          navigator.geolocation.getCurrentPosition(
+            (pos) => setLocation(pos.coords.latitude, pos.coords.longitude, '현재 위치'),
+            () => { if (results) results.innerHTML = '<div style="padding:10px 12px;border:1px solid #F2B8AA;border-radius:12px;color:#B42318;font-size:13px;font-weight:800">현재 위치 권한을 허용해주세요</div>'; },
+            { enableHighAccuracy: true, timeout: 8000 }
+          );
+        });
+      })();
+    </script>
   `;
 }
 
@@ -1747,6 +2066,7 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], employees: Employ
             <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(workspaceName)}</span>
             <span style="background:#C13A2A;color:#FFFFFF;font-size:12px;font-weight:700;padding:5px 11px;border-radius:999px">사장님 열람 중</span>
             <span style="flex:1"></span>
+            <a href="/admin/workspace" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">사업장 설정</a>
             <a href="/admin/employees" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">직원 관리</a>
             <a href="/admin/export.csv" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#C13A2A;color:#FFFFFF;text-decoration:none">CSV 내려받기</a>
             <a href="/admin/lock" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
@@ -1986,6 +2306,120 @@ function messagePage(title: string, detail: string, href: string): string {
       </section>
     `
   });
+}
+
+function parseWorkspaceLocationInput(body: Record<string, FormDataEntryValue | FormDataEntryValue[] | undefined>): WorkspaceLocation | undefined {
+  const latitude = optionalNumber(body.latitude);
+  const longitude = optionalNumber(body.longitude);
+  if (latitude === undefined || longitude === undefined) return undefined;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return undefined;
+  return {
+    latitude,
+    longitude,
+    radiusMeters: normalizeRadiusMeters(optionalNumber(body.radiusMeters))
+  };
+}
+
+function normalizeRadiusMeters(value: number | undefined): number {
+  return value !== undefined && ALLOWED_RADIUS_METERS.includes(value) ? value : DEFAULT_WORKSPACE_LOCATION.radiusMeters;
+}
+
+function formatCoordinate(value: number): string {
+  return String(Math.round(value * 1000000) / 1000000);
+}
+
+function osmEmbedUrl(location: WorkspaceLocation): string {
+  const delta = 0.003;
+  const south = location.latitude - delta;
+  const west = location.longitude - delta;
+  const north = location.latitude + delta;
+  const east = location.longitude + delta;
+  const bbox = `${west},${south},${east},${north}`;
+  const marker = `${location.latitude},${location.longitude}`;
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(marker)}`;
+}
+
+async function searchLocations(query: string): Promise<LocationSearchResult[]> {
+  const queries = [query, ...koreanSearchVariants(query)];
+  for (const candidate of queries) {
+    const results = await searchNominatimLocations(candidate);
+    if (results.length > 0) return results;
+  }
+  return searchPhotonLocations(query);
+}
+
+function koreanSearchVariants(query: string): string[] {
+  const hasHangul = /[가-힣]/.test(query);
+  const alreadyKoreaScoped = /대한민국|한국|korea|south korea/i.test(query);
+  return hasHangul && !alreadyKoreaScoped ? [`${query} 대한민국`] : [];
+}
+
+async function searchNominatimLocations(query: string): Promise<LocationSearchResult[]> {
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("limit", "5");
+  url.searchParams.set("countrycodes", "kr");
+  url.searchParams.set("q", query);
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      accept: "application/json",
+      "accept-language": "ko",
+      "user-agent": "chulgeun-dojang/1.0"
+    }
+  });
+  if (!response.ok) return [];
+
+  const payload = await response.json() as Array<{ display_name?: string; lat?: string; lon?: string; type?: string }>;
+  return payload
+    .map((item) => ({
+      name: item.display_name?.trim() ?? "",
+      latitude: Number(item.lat),
+      longitude: Number(item.lon),
+      type: item.type
+    }))
+    .filter((item) => item.name && Number.isFinite(item.latitude) && Number.isFinite(item.longitude))
+    .slice(0, 5);
+}
+
+async function searchPhotonLocations(query: string): Promise<LocationSearchResult[]> {
+  const url = new URL("https://photon.komoot.io/api/");
+  url.searchParams.set("q", query);
+  url.searchParams.set("limit", "5");
+  url.searchParams.set("lang", "ko");
+
+  const response = await fetch(url.toString(), { headers: { accept: "application/json" } });
+  if (!response.ok) return [];
+
+  const payload = await response.json() as {
+    features?: Array<{
+      properties?: { name?: string; street?: string; housenumber?: string; city?: string; state?: string; country?: string; osm_value?: string };
+      geometry?: { coordinates?: [number, number] };
+    }>;
+  };
+
+  return (payload.features ?? [])
+    .map((feature) => {
+      const coordinates = feature.geometry?.coordinates;
+      const props = feature.properties ?? {};
+      const primary = [props.name, [props.street, props.housenumber].filter(Boolean).join(" ")]
+        .map((part) => part?.trim())
+        .find(Boolean) ?? "검색 위치";
+      const area = [props.city, props.state, props.country]
+        .map((part) => part?.trim())
+        .filter(Boolean)
+        .filter((part, index, all) => all.indexOf(part) === index)
+        .slice(0, 2)
+        .join(" · ");
+      return {
+        name: area ? `${primary} · ${area}` : primary,
+        latitude: Number(coordinates?.[1]),
+        longitude: Number(coordinates?.[0]),
+        type: props.osm_value
+      };
+    })
+    .filter((item) => item.name && Number.isFinite(item.latitude) && Number.isFinite(item.longitude))
+    .slice(0, 5);
 }
 
 function parseLocationConsent(value: string): LocationConsent {
