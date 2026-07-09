@@ -48,6 +48,8 @@ describe("worker app", () => {
     expect(html).toContain('data-screen-label="A1 키오스크 태블릿 정상"');
     expect(html).toContain("/scan?token=");
     expect(html).toContain("새 큐알까지 60초");
+    expect(html).toContain("사업장");
+    expect(html).not.toContain("카페 소소");
     expect(html).toContain("화면을 두 번 탭하면 전체 화면으로 전환됩니다");
     expect(html).toContain("width:100vw");
     expect(html).toContain("height:100dvh");
@@ -184,11 +186,18 @@ describe("worker app", () => {
     const setup = await app.request("/setup", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ businessName: "카페 소소", ownerPin: "1234" })
+      body: new URLSearchParams({ businessName: "심플랩스", ownerPin: "1234" })
     });
 
     expect(setup.status).toBe(302);
     expect(setup.headers.get("location")).toBe("/kiosk");
+
+    const kioskAfterSetup = await app.request("/kiosk");
+    const kioskAfterSetupHtml = await kioskAfterSetup.text();
+
+    expect(kioskAfterSetup.status).toBe(200);
+    expect(kioskAfterSetupHtml).toContain("심플랩스");
+    expect(kioskAfterSetupHtml).not.toContain("카페 소소");
 
     const env = { ADMIN_PIN: "0000", ADMIN_EXPORT_TOKEN: "export-token" };
     const locked = await app.request("/admin/today", {}, env);

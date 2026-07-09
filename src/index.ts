@@ -13,6 +13,12 @@ type Env = {
 type AdminPinPageOptions = {
   errorMessage?: string;
   setupMissing?: boolean;
+  workspaceName?: string;
+};
+
+type WorkspaceDisplay = {
+  workspaceName: string;
+  kioskName: string;
 };
 
 type ClockEventType = "clock_in" | "clock_out" | "break_start" | "break_end";
@@ -46,8 +52,8 @@ const app = new Hono<{ Bindings: Env }>();
 
 const DEFAULT_WORKSPACE_ID = "default-workspace";
 const DEFAULT_KIOSK_ID = "main-kiosk";
-const DEFAULT_WORKSPACE_DISPLAY_NAME = "카페 소소";
-const DEFAULT_KIOSK_DISPLAY_NAME = "카운터 태블릿";
+const DEFAULT_WORKSPACE_DISPLAY_NAME = "사업장";
+const DEFAULT_KIOSK_DISPLAY_NAME = "키오스크";
 const QR_TTL_SECONDS = 60;
 const LOCAL_SECRET = "local-dev-secret";
 const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
@@ -164,6 +170,7 @@ app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
 
 app.get("/kiosk", async (context) => {
   await ensureDefaultSeed(context.env);
+  const display = await getWorkspaceDisplay(context.env);
 
   const now = Math.floor(Date.now() / 1000);
   const token = await createQrToken(
@@ -181,7 +188,7 @@ app.get("/kiosk", async (context) => {
 
   return context.html(layout({
     title: "출근도장 키오스크",
-    body: renderKioskPage({ scanUrl })
+    body: renderKioskPage({ scanUrl, ...display })
   }));
 });
 
@@ -213,10 +220,11 @@ app.get("/scan", async (context) => {
   }
 
   const rememberedEmployee = findSeedEmployee(getCookieValue(context.req.header("cookie"), REMEMBERED_EMPLOYEE_COOKIE));
+  const display = await getWorkspaceDisplay(context.env, verified.claims.workspaceId, verified.claims.kioskId);
 
   return context.html(layout({
     title: "출퇴근 기록",
-    body: renderScanPage({ token, attemptId: consumed.attemptId, rememberedEmployee })
+    body: renderScanPage({ token, attemptId: consumed.attemptId, rememberedEmployee, workspaceName: display.workspaceName })
   }));
 });
 
@@ -288,13 +296,14 @@ app.get("/events/demo", (context) => context.redirect("/events", 302));
 
 app.get("/events", async (context) => {
   const events = await listRecentEvents(context.env);
+  const display = await getWorkspaceDisplay(context.env);
   return context.html(layout({
     title: "최근 기록",
     body: `
       <section class="hero-card">
         <div class="eyebrow">Events</div>
         <h1>최근 기록</h1>
-        <p>운영 사업장의 최근 출퇴근 이벤트입니다.</p>
+        <p>${escapeHtml(display.workspaceName)}의 최근 출퇴근 이벤트입니다.</p>
         <div class="actions"><a class="button primary" href="/kiosk">키오스크 열기</a></div>
       </section>
       ${renderEventList(events)}
@@ -303,8 +312,9 @@ app.get("/events", async (context) => {
 });
 
 app.get("/admin/today", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
   if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
-    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage() }), 401);
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
   }
 
   const events = await listRecentEvents(context.env);
@@ -314,16 +324,17 @@ app.get("/admin/today", async (context) => {
 
   return context.html(layout({
     title: "오늘 기록",
-    body: renderAdminTodayPage(events, { clockIns, clockOuts, flagged })
+    body: renderAdminTodayPage(events, { clockIns, clockOuts, flagged }, display.workspaceName)
   }));
 });
 
 app.post("/admin/unlock", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
   const ownerPinHash = await getOwnerPinHash(context.env);
   if (!ownerPinHash) {
     return context.html(layout({
       title: "사장님 확인",
-      body: renderAdminPinPage({ setupMissing: true, errorMessage: "사업자 setup에서 사장님 PIN을 먼저 설정해주세요" })
+      body: renderAdminPinPage({ setupMissing: true, errorMessage: "사업자 setup에서 사장님 PIN을 먼저 설정해주세요", workspaceName: display.workspaceName })
     }), 503);
   }
 
@@ -333,7 +344,7 @@ app.post("/admin/unlock", async (context) => {
   if (!timingSafeEqual(submittedHash, ownerPinHash)) {
     return context.html(layout({
       title: "사장님 확인",
-      body: renderAdminPinPage({ errorMessage: "PIN이 맞지 않습니다" })
+      body: renderAdminPinPage({ errorMessage: "PIN이 맞지 않습니다", workspaceName: display.workspaceName })
     }), 401);
   }
 
@@ -414,6 +425,35 @@ async function getOwnerPinHash(env?: Env): Promise<string | undefined> {
     `SELECT owner_pin_hash FROM workspaces WHERE id = ?`
   ).bind(DEFAULT_WORKSPACE_ID).first<{ owner_pin_hash: string | null }>();
   return row?.owner_pin_hash ?? undefined;
+}
+
+async function getWorkspaceDisplay(
+  env: Env | undefined,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+  kioskId = DEFAULT_KIOSK_ID
+): Promise<WorkspaceDisplay> {
+  if (!env?.DB) {
+    return {
+      workspaceName: memoryStore.workspaceName || DEFAULT_WORKSPACE_DISPLAY_NAME,
+      kioskName: DEFAULT_KIOSK_DISPLAY_NAME
+    };
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT w.name AS workspace_name, w.owner_pin_hash, k.name AS kiosk_name
+     FROM workspaces w
+     LEFT JOIN kiosks k ON k.workspace_id = w.id AND k.id = ?
+     WHERE w.id = ?`
+  ).bind(kioskId, workspaceId).first<{
+    workspace_name: string | null;
+    owner_pin_hash: string | null;
+    kiosk_name: string | null;
+  }>();
+
+  return {
+    workspaceName: row?.owner_pin_hash ? row.workspace_name?.trim() || DEFAULT_WORKSPACE_DISPLAY_NAME : DEFAULT_WORKSPACE_DISPLAY_NAME,
+    kioskName: row?.kiosk_name?.trim() || DEFAULT_KIOSK_DISPLAY_NAME
+  };
 }
 
 async function hashOwnerPin(pin: string, workspaceId: string, env?: Env): Promise<string> {
@@ -614,9 +654,9 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
     const events = await listRecentEvents(env);
     return events.slice().reverse().map((event) => ({
       id: event.id,
-      workspaceName: "운영 사업장",
+      workspaceName: memoryStore.workspaceName || DEFAULT_WORKSPACE_DISPLAY_NAME,
       employeeName: event.employeeName,
-      kioskName: "입구 키오스크",
+      kioskName: DEFAULT_KIOSK_DISPLAY_NAME,
       eventType: event.eventType,
       occurredAt: event.occurredAt,
       latitude: event.latitude,
@@ -662,7 +702,7 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
   }));
 }
 
-function renderKioskPage(input: { scanUrl: string }): string {
+function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskName: string }): string {
   const nowTime = formatCurrentClockTime();
   const today = formatCurrentKoreanDate();
   const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${encodeURIComponent(input.scanUrl)}`;
@@ -673,8 +713,8 @@ function renderKioskPage(input: { scanUrl: string }): string {
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
             <span style="width:1px;height:16px;background:#E0D8C6"></span>
-            <span style="font-size:15px;font-weight:700;color:#22262B">${DEFAULT_WORKSPACE_DISPLAY_NAME}</span>
-            <span style="font-size:12px;font-weight:600;color:#6E6A61;border:1px solid #E0D8C6;border-radius:999px;padding:4px 10px">${DEFAULT_KIOSK_DISPLAY_NAME}</span>
+            <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(input.workspaceName)}</span>
+            <span style="font-size:12px;font-weight:600;color:#6E6A61;border:1px solid #E0D8C6;border-radius:999px;padding:4px 10px">${escapeHtml(input.kioskName)}</span>
             <span style="flex:1"></span>
             <span style="background:#E8F3EC;color:#217A4B;font-size:12px;font-weight:700;padding:5px 11px;border-radius:999px">정상 연결</span>
           </div>
@@ -789,9 +829,10 @@ function renderScanPage(input: {
   token: string;
   attemptId: string;
   rememberedEmployee?: (typeof seedEmployees)[number];
+  workspaceName: string;
 }): string {
   const initialEmployee = input.rememberedEmployee ?? seedEmployees[0];
-  const firstVisitPanel = input.rememberedEmployee ? "" : renderFirstVisitPanel();
+  const firstVisitPanel = input.rememberedEmployee ? "" : renderFirstVisitPanel(input.workspaceName);
   const clockPanelHidden = input.rememberedEmployee ? "" : " hidden";
   const clockStatus = input.rememberedEmployee ? "이 폰 기억됨" : "이름 확인됨";
 
@@ -807,7 +848,7 @@ function renderScanPage(input: {
         <input type="hidden" name="accuracyMeters" data-location="accuracy" />
         <input type="hidden" name="locationConsent" value="unavailable" data-location="consent" />
         ${firstVisitPanel}
-        ${renderClockPanel({ employee: initialEmployee, hiddenAttr: clockPanelHidden, status: clockStatus, remembered: Boolean(input.rememberedEmployee) })}
+        ${renderClockPanel({ employee: initialEmployee, hiddenAttr: clockPanelHidden, status: clockStatus, remembered: Boolean(input.rememberedEmployee), workspaceName: input.workspaceName })}
         ${renderLocationPanel()}
       </form>
     </div>
@@ -815,7 +856,7 @@ function renderScanPage(input: {
   `;
 }
 
-function renderFirstVisitPanel(): string {
+function renderFirstVisitPanel(workspaceName: string): string {
   return `
     <section data-screen-label="2a 기기 기억 첫 1회" data-step="select" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
@@ -824,7 +865,7 @@ function renderFirstVisitPanel(): string {
         <span style="flex:1"></span>
         <span style="background:#F1EDE3;color:#6E6A61;font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:999px">첫 방문</span>
       </div>
-      <h1 style="margin:24px 0 0;font-size:25px;font-weight:800;line-height:1.3;color:#17191C">${DEFAULT_WORKSPACE_DISPLAY_NAME}</h1>
+      <h1 style="margin:24px 0 0;font-size:25px;font-weight:800;line-height:1.3;color:#17191C">${escapeHtml(workspaceName)}</h1>
       <div style="font-size:15px;color:#6E6A61;margin-top:8px">처음이시네요. 이름을 한 번만 선택해주세요.</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px">
         ${seedEmployees.map((employee) => `
@@ -844,7 +885,7 @@ function renderFirstVisitPanel(): string {
   `;
 }
 
-function renderClockPanel(input: { employee: (typeof seedEmployees)[number]; hiddenAttr: string; status: string; remembered: boolean }): string {
+function renderClockPanel(input: { employee: (typeof seedEmployees)[number]; hiddenAttr: string; status: string; remembered: boolean; workspaceName: string }): string {
   const resetControl = input.remembered
     ? `<a href="/forget-device" style="text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;text-decoration:none;padding:8px 0">내가 아니에요 — 이름 선택으로</a>`
     : `<button type="button" data-back-select style="border:0;background:transparent;text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;padding:8px 0;cursor:pointer">내가 아니에요 — 이름 선택으로</button>`;
@@ -858,7 +899,7 @@ function renderClockPanel(input: { employee: (typeof seedEmployees)[number]; hid
         <span data-clock-status style="background:#E8F3EC;color:#217A4B;font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:999px">${escapeHtml(input.status)}</span>
       </div>
       <h1 data-selected-heading style="margin:24px 0 0;font-size:25px;font-weight:800;line-height:1.3;color:#17191C">${escapeHtml(input.employee.name)} 님, 안녕하세요</h1>
-      <div style="font-size:14.5px;color:#6E6A61;margin-top:8px">${DEFAULT_WORKSPACE_DISPLAY_NAME} · 지금 시각 <span data-phone-clock>${formatCurrentClockTime()}</span></div>
+      <div style="font-size:14.5px;color:#6E6A61;margin-top:8px">${escapeHtml(input.workspaceName)} · 지금 시각 <span data-phone-clock>${formatCurrentClockTime()}</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:28px">
         <button type="button" data-event-type="clock_in" style="min-height:132px;border:0;border-radius:20px;background:#C13A2A;color:#FFFFFF;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-end;text-align:left;padding:20px;cursor:pointer">
           <span style="font-size:30px;font-weight:900;line-height:1">출근</span>
@@ -1085,7 +1126,7 @@ function renderSetupPage(options: { errorMessage?: string; businessName?: string
         ${errorBlock}
         <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
           사업장 이름
-          <input name="businessName" value="${escapeHtml(options.businessName ?? DEFAULT_WORKSPACE_DISPLAY_NAME)}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
+          <input name="businessName" value="${escapeHtml(options.businessName ?? "")}" placeholder="예: 우리 매장" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFDF8;color:#22262B" />
         </label>
         <label style="display:grid;gap:7px;font-size:13px;font-weight:800;color:#3C424A">
           사장님 PIN 4자리
@@ -1098,6 +1139,7 @@ function renderSetupPage(options: { errorMessage?: string; businessName?: string
 }
 
 function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
+  const workspaceName = options.workspaceName ?? DEFAULT_WORKSPACE_DISPLAY_NAME;
   const errorBlock = options.errorMessage
     ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:10px 14px;color:#B42318;font-size:13px;font-weight:800;margin-top:8px">${escapeHtml(options.errorMessage)}</div>`
     : "";
@@ -1112,7 +1154,7 @@ function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
             <span style="width:1px;height:16px;background:#E0D8C6"></span>
-            <span style="font-size:15px;font-weight:700;color:#22262B">${DEFAULT_WORKSPACE_DISPLAY_NAME}</span>
+            <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(workspaceName)}</span>
             <span style="font-size:12px;font-weight:600;color:#6E6A61;border:1px solid #E0D8C6;border-radius:999px;padding:4px 10px">사장님 확인</span>
             <span style="flex:1"></span>
             <a href="/kiosk" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
@@ -1178,14 +1220,14 @@ function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
   `;
 }
 
-function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockIns: number; clockOuts: number; flagged: number }): string {
+function renderAdminTodayPage(events: AttendanceEventRecord[], summary: { clockIns: number; clockOuts: number; flagged: number }, workspaceName: string): string {
   return `
     <div data-screen-label="A7 사장님 열람 오늘 기록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:10px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
             <span style="width:1px;height:16px;background:#E0D8C6"></span>
-            <span style="font-size:15px;font-weight:700;color:#22262B">${DEFAULT_WORKSPACE_DISPLAY_NAME}</span>
+            <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(workspaceName)}</span>
             <span style="background:#C13A2A;color:#FFFFFF;font-size:12px;font-weight:700;padding:5px 11px;border-radius:999px">사장님 열람 중</span>
             <span style="flex:1"></span>
             <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
