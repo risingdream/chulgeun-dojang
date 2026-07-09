@@ -1716,7 +1716,10 @@ function renderPinKeypadScript(): string {
 function renderAdminTodayPage(events: AttendanceEventRecord[], employees: EmployeeRecord[], summary: { clockIns: number; clockOuts: number; flagged: number }, workspaceName: string): string {
   const employeeRows = employees.length > 0
     ? employees.map((employee) => renderAdminEmployeeRow(employee, events.filter((event) => event.employeeId === employee.id))).join("")
-    : `<div style="background:#FFFFFF;border:1px dashed #D8CDBB;border-radius:12px;padding:18px 16px;font-size:14px;color:#6E6A61;font-weight:700">등록된 직원이 없습니다. 사장님 화면에서 직원을 먼저 등록해주세요.</div>`;
+    : `<div style="background:#FFFFFF;border:1px dashed #D8CDBB;border-radius:12px;padding:18px 16px;font-size:14px;color:#6E6A61;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:14px">
+        <span>등록된 직원이 없습니다. 직원을 먼저 등록해주세요.</span>
+        <a href="/admin/employees/new" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:900;background:#C13A2A;color:#FFFFFF;text-decoration:none;white-space:nowrap">직원 등록</a>
+      </div>`;
 
   return `
     <div data-kiosk-screen data-screen-label="A7 사장님 열람 오늘 기록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
@@ -1732,6 +1735,7 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], employees: Employ
               <span style="font-size:10px;color:#8A8478">큐알 유지 중</span>
             </div>
             <span style="font-size:12.5px;font-weight:700;color:#6E6A61">60초 후 자동 잠금</span>
+            <a href="/admin/employees" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#FFFFFF;color:#22262B;text-decoration:none">직원 관리</a>
             <a href="/admin/export.csv" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:800;background:#C13A2A;color:#FFFFFF;text-decoration:none">CSV 내려받기</a>
             <a href="/admin/lock" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">닫기</a>
           </div>

@@ -355,6 +355,31 @@ describe("worker app", () => {
     expect(authorized.status).toBe(200);
     expect(html).toContain("오늘 기록");
     expect(html).toContain("김민지");
+    expect(html).toContain('href="/admin/employees"');
+    expect(html).toContain("직원 관리");
+  });
+
+  it("lets the owner open employee registration directly from an empty today screen", async () => {
+    const env = {
+      ADMIN_EXPORT_TOKEN: "export-token",
+      DB: fakeD1({
+        workspaceName: "심플랩스",
+        ownerPinHash: "configured-pin-hash",
+        employees: []
+      })
+    };
+
+    const response = await app.request(
+      "/admin/today",
+      { headers: { authorization: "Bearer export-token" } },
+      env
+    );
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("등록된 직원이 없습니다");
+    expect(html).toContain('href="/admin/employees/new"');
+    expect(html).toContain("직원 등록");
   });
 
   it("renders D1, D2, and D3 employee management screens and creates employees from owner flow", async () => {
