@@ -76,7 +76,8 @@ describe("worker app", () => {
     const loginHtml = await loginPage.text();
 
     expect(loginPage.status).toBe(200);
-    expect(loginHtml).toContain('data-screen-label="A5 키오스크 로그인 PIN"');
+    expect(loginHtml).toContain('data-screen-label="K1 키오스크 로그인 PIN"');
+    expect(loginHtml).not.toContain('data-screen-label="A5 키오스크 로그인 PIN"');
     expect(loginHtml).toContain('method="post" action="/kiosk/login"');
     expect(loginHtml).toContain("심플랩스");
 
@@ -147,17 +148,53 @@ describe("worker app", () => {
     expect(html).not.toContain("상태 안내");
   });
 
-  it("renders first-time scan using the provided 2a and B3 screens", async () => {
+  it("renders kiosk state screens A2, A3, A4, and A5 from the provided HTML plan", async () => {
+    const offline = await app.request("/kiosk?state=offline");
+    const offlineHtml = await offline.text();
+    expect(offline.status).toBe(200);
+    expect(offlineHtml).toContain('data-screen-label="A2 키오스크 태블릿 오프라인"');
+    expect(offlineHtml).toContain("네트워크 연결이 끊겼습니다");
+    expect(offlineHtml).toContain("큐알 사용 중지");
+    expect(offlineHtml).toContain("이미 저장된 기록은 사라지지 않습니다");
+    expect(offlineHtml).toContain("width:100vw");
+    expect(offlineHtml).not.toContain("background:#101216");
+
+    const failed = await app.request("/kiosk?state=qr-failed");
+    const failedHtml = await failed.text();
+    expect(failed.status).toBe(200);
+    expect(failedHtml).toContain('data-screen-label="A3 키오스크 태블릿 큐알 갱신 실패"');
+    expect(failedHtml).toContain("새 큐알을 만들지 못했습니다");
+    expect(failedHtml).toContain("만료됨 — 스캔해도 기록되지 않습니다");
+    expect(failedHtml).toContain("5초 후 자동 재시도");
+
+    const phone = await app.request("/kiosk?device=phone");
+    const phoneHtml = await phone.text();
+    expect(phone.status).toBe(200);
+    expect(phoneHtml).toContain('data-screen-label="A4 키오스크 폰 정상"');
+    expect(phoneHtml).toContain("카메라로 찍고 → 이름 선택 → 출근/퇴근");
+    expect(phoneHtml).toContain("새 큐알까지 60초");
+
+    const phoneOffline = await app.request("/kiosk?device=phone&state=offline");
+    const phoneOfflineHtml = await phoneOffline.text();
+    expect(phoneOffline.status).toBe(200);
+    expect(phoneOfflineHtml).toContain('data-screen-label="A5 키오스크 폰 오프라인"');
+    expect(phoneOfflineHtml).toContain("네트워크 끊김 — 연결되면 자동 복구됩니다");
+    expect(phoneOfflineHtml).toContain("사장님 열람 — 키오스크에서");
+  });
+
+  it("renders first-time scan using the provided B1, B2, 2a option, and B3 screens", async () => {
     const token = await createToken(`first-device-${crypto.randomUUID()}`);
     const response = await app.request(`/scan?token=${encodeURIComponent(token)}`);
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain('data-screen-label="2a 기기 기억 첫 1회"');
+    expect(html).toContain('data-screen-label="B1 직원 이름 선택"');
+    expect(html).toContain('data-screen-label="B2 출근/퇴근 선택"');
+    expect(html).toContain('data-flow-label="2a 기기 기억 첫 1회"');
     expect(html).toContain('data-screen-label="B3 위치 권한 안내"');
     expect(html).not.toContain("phone-device");
     expect(html).not.toContain("width:402px");
-    expect(html).toContain("처음이시네요. 이름을 한 번만 선택해주세요.");
+    expect(html).toContain("이름을 선택해주세요 · 카운터 태블릿");
     expect(html).toContain("이 폰 기억하기");
     expect(html).toContain("기록하는 순간의 위치 1회만 저장");
     expect(html).toContain("이동 경로는 수집하지 않습니다");
@@ -191,7 +228,8 @@ describe("worker app", () => {
     const html = await response.text();
 
     expect(response.status).toBe(200);
-    expect(html).toContain('data-screen-label="2a 기기 기억 매일"');
+    expect(html).toContain('data-screen-label="B2 출근/퇴근 선택"');
+    expect(html).toContain('data-flow-label="2a 기기 기억 매일"');
     expect(html).toContain("박서준 님, 안녕하세요");
     expect(html).toContain('name="employeeId" value="employee-b"');
     expect(html).toContain("내가 아니에요 — 이름 선택으로");
@@ -280,6 +318,27 @@ describe("worker app", () => {
     expect(csv).toContain("위치없음;위치건너뜀");
   });
 
+  it("renders B5 when a granted location is outside the workspace radius", async () => {
+    const { html } = await recordClockEvent({
+      locationConsent: "granted",
+      latitude: "37.5233",
+      longitude: "127.1102",
+      accuracyMeters: "15"
+    });
+
+    expect(html).toContain('data-screen-label="B5 기록 완료 위치 벗어남"');
+    expect(html).toContain("사업장 반경 밖");
+    expect(html).toContain("기록이 저장되었습니다. 이 창은 닫으셔도 됩니다.");
+
+    const response = await app.request(
+      "/admin/export.csv",
+      { headers: { authorization: "Bearer export-token" } },
+      { ADMIN_EXPORT_TOKEN: "export-token" }
+    );
+    const csv = await response.text();
+    expect(csv).toContain("반경밖");
+  });
+
   it("protects today admin view and shows records when authorized", async () => {
     await recordClockEvent();
 
@@ -296,6 +355,73 @@ describe("worker app", () => {
     expect(authorized.status).toBe(200);
     expect(html).toContain("오늘 기록");
     expect(html).toContain("김민지");
+  });
+
+  it("renders D1, D2, and D3 employee management screens and creates employees from owner flow", async () => {
+    const env = {
+      ADMIN_EXPORT_TOKEN: "export-token",
+      DB: fakeD1({
+        workspaceName: "심플랩스",
+        ownerPinHash: "configured-pin-hash",
+        employees: [
+          { id: "employee-active", name: "강태오", status: "registered" },
+          { id: "employee-inactive", name: "문소리", status: "inactive" }
+        ]
+      })
+    };
+    const auth = { authorization: "Bearer export-token" };
+
+    const list = await app.request("/admin/employees", { headers: auth }, env);
+    const listHtml = await list.text();
+    expect(list.status).toBe(200);
+    expect(listHtml).toContain('data-screen-label="D1 직원 관리 목록"');
+    expect(listHtml).toContain("직원 관리");
+    expect(listHtml).toContain("심플랩스 · 활동 1명 · 비활성 1명");
+    expect(listHtml).toContain("+ 직원 추가");
+    expect(listHtml).toContain("삭제 대신 비활성화");
+    expect(listHtml).toContain("강태오");
+    expect(listHtml).toContain("문소리");
+
+    const newPage = await app.request("/admin/employees/new", { headers: auth }, env);
+    const newHtml = await newPage.text();
+    expect(newPage.status).toBe(200);
+    expect(newHtml).toContain('data-screen-label="D2 직원 추가"');
+    expect(newHtml).toContain("이름만 있으면 됩니다. 전화번호·주민번호는 받지 않습니다.");
+    expect(newHtml).toContain("추가하고 계속");
+    expect(newHtml).toContain("완료");
+
+    const create = await app.request("/admin/employees", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ name: "최유나" })
+    }, env);
+    expect(create.status).toBe(302);
+    expect(create.headers.get("location")).toBe("/admin/employees/new?added=%EC%B5%9C%EC%9C%A0%EB%82%98");
+
+    const afterCreate = await app.request("/admin/employees", { headers: auth }, env);
+    expect(await afterCreate.text()).toContain("최유나");
+
+    const detail = await app.request("/admin/employees/employee-active", { headers: auth }, env);
+    const detailHtml = await detail.text();
+    expect(detail.status).toBe(200);
+    expect(detailHtml).toContain('data-screen-label="D3 직원 상세 시트"');
+    expect(detailHtml).toContain("등록 링크 복사");
+    expect(detailHtml).toContain("이름 수정");
+    expect(detailHtml).toContain("비활성화");
+    expect(detailHtml).toContain("닫기");
+
+    const deactivate = await app.request("/admin/employees/employee-active", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ action: "deactivate" })
+    }, env);
+    expect(deactivate.status).toBe(302);
+    expect(deactivate.headers.get("location")).toBe("/admin/employees");
+
+    const scanToken = await createToken(`after-deactivate-${crypto.randomUUID()}`);
+    const scan = await app.request(`/scan?token=${encodeURIComponent(scanToken)}`, {}, env);
+    const scanHtml = await scan.text();
+    expect(scanHtml).not.toContain("강태오");
   });
 
   it("sets the owner PIN during business setup and uses it for the owner session", async () => {
@@ -484,6 +610,7 @@ function fakeD1(initial: {
           if (query.includes("FROM employees")) {
             const employee = state.employees.find((item) => item.id === args[1]);
             if (!employee) return null;
+            if (query.includes("status = ?") && (employee.status ?? "registered") !== args[2]) return null;
             return {
               id: employee.id,
               name: employee.name,
@@ -503,8 +630,11 @@ function fakeD1(initial: {
         },
         all: async () => {
           if (query.includes("FROM employees")) {
+            const employees = query.includes("status = ?")
+              ? state.employees.filter((employee) => (employee.status ?? "registered") === args[1])
+              : state.employees;
             return {
-              results: state.employees.map((employee) => ({
+              results: employees.map((employee) => ({
                 id: employee.id,
                 name: employee.name,
                 employee_code_hash: employee.codeHash ?? `${employee.id}-code`,
@@ -521,6 +651,22 @@ function fakeD1(initial: {
           }
           if (query.includes("INSERT INTO qr_consumptions")) {
             state.consumptions.set(String(args[0]), { attemptId: String(args[3]) });
+          }
+          if (query.includes("INSERT INTO employees")) {
+            state.employees.push({
+              id: String(args[0]),
+              name: String(args[2]),
+              codeHash: String(args[3]),
+              status: String(args[4] ?? "registered")
+            });
+          }
+          if (query.includes("UPDATE employees SET status")) {
+            const employee = state.employees.find((item) => item.id === args[1]);
+            if (employee) employee.status = String(args[0]);
+          }
+          if (query.includes("UPDATE employees SET name")) {
+            const employee = state.employees.find((item) => item.id === args[1]);
+            if (employee) employee.name = String(args[0]);
           }
           return { success: true };
         }

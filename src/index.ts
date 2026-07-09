@@ -21,6 +21,12 @@ type WorkspaceDisplay = {
   kioskName: string;
 };
 
+type WorkspaceLocation = {
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+};
+
 type ClockEventType = "clock_in" | "clock_out" | "break_start" | "break_end";
 type LocationConsent = "granted" | "skipped" | "unavailable";
 
@@ -52,6 +58,7 @@ type EmployeeRecord = {
   id: string;
   name: string;
   codeHash?: string;
+  status?: "registered" | "inactive" | "pending" | string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -70,21 +77,23 @@ const KIOSK_SESSION_COOKIE = "kioskSession";
 const KIOSK_SESSION_SECONDS = 60 * 60 * 24;
 const ADMIN_SESSION_COOKIE = "adminSession";
 const ADMIN_SESSION_SECONDS = 60;
-const seedEmployees: EmployeeRecord[] = [
-  { id: "employee-a", name: "김민지", codeHash: "employee-a-code" },
-  { id: "employee-b", name: "박서준", codeHash: "employee-b-code" },
-  { id: "employee-c", name: "이하늘", codeHash: "employee-c-code" },
-  { id: "employee-d", name: "최유나", codeHash: "employee-d-code" },
-  { id: "employee-e", name: "정도윤", codeHash: "employee-e-code" },
-  { id: "employee-f", name: "한지우", codeHash: "employee-f-code" }
+const localDemoEmployees: EmployeeRecord[] = [
+  { id: "employee-a", name: "김민지", codeHash: "employee-a-code", status: "registered" },
+  { id: "employee-b", name: "박서준", codeHash: "employee-b-code", status: "registered" },
+  { id: "employee-c", name: "이하늘", codeHash: "employee-c-code", status: "registered" },
+  { id: "employee-d", name: "최유나", codeHash: "employee-d-code", status: "registered" },
+  { id: "employee-e", name: "정도윤", codeHash: "employee-e-code", status: "registered" },
+  { id: "employee-f", name: "한지우", codeHash: "employee-f-code", status: "registered" }
 ];
-const fixtureEmployeeIds = new Set(seedEmployees.map((employee) => employee.id));
+const fixtureEmployeeIds = new Set(localDemoEmployees.map((employee) => employee.id));
 
 const memoryStore = {
   consumptions: new Map<string, ConsumptionRecord>(),
   events: [] as AttendanceEventRecord[],
+  employees: localDemoEmployees.map((employee) => ({ ...employee })),
   workspaceName: DEFAULT_WORKSPACE_DISPLAY_NAME,
-  ownerPinHash: undefined as string | undefined
+  ownerPinHash: undefined as string | undefined,
+  location: { latitude: 37.5133, longitude: 127.1002, radiusMeters: 80 } as WorkspaceLocation
 };
 
 app.onError((error, context) => {
@@ -260,6 +269,27 @@ app.get("/kiosk", async (context) => {
     }
   }
   const display = await getWorkspaceDisplay(context.env);
+  const state = context.req.query("state") ?? "normal";
+  const device = context.req.query("device") ?? "tablet";
+  if (device === "phone") {
+    const label = state === "offline" ? "A5 키오스크 폰 오프라인" : "A4 키오스크 폰 정상";
+    return context.html(layout({
+      title: "출근도장 키오스크",
+      body: renderPhoneKioskStatePage({ label, offline: state === "offline", ...display })
+    }));
+  }
+  if (state === "offline") {
+    return context.html(layout({
+      title: "출근도장 키오스크",
+      body: renderTabletKioskStatePage({ label: "A2 키오스크 태블릿 오프라인", mode: "offline", ...display })
+    }));
+  }
+  if (state === "qr-failed") {
+    return context.html(layout({
+      title: "출근도장 키오스크",
+      body: renderTabletKioskStatePage({ label: "A3 키오스크 태블릿 큐알 갱신 실패", mode: "qr-failed", ...display })
+    }));
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const token = await createQrToken(
@@ -460,6 +490,84 @@ app.get("/admin/lock", (context) => {
   return context.redirect("/kiosk", 302);
 });
 
+
+app.get("/admin/employees", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const employees = await listAllEmployees(context.env);
+  return context.html(layout({
+    title: "직원 관리",
+    body: renderEmployeeListPage(employees, display.workspaceName)
+  }));
+});
+
+app.get("/admin/employees/new", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  return context.html(layout({
+    title: "직원 추가",
+    body: renderEmployeeNewPage(context.req.query("added") ?? undefined, display.workspaceName)
+  }));
+});
+
+app.post("/admin/employees", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const body = await context.req.parseBody();
+  const name = stringField(body.name).trim();
+  if (!name) {
+    return context.html(layout({
+      title: "직원 추가",
+      body: renderEmployeeNewPage(undefined, display.workspaceName, "직원 이름을 입력해주세요")
+    }), 400);
+  }
+
+  await createEmployee(context.env, DEFAULT_WORKSPACE_ID, name);
+  return context.redirect(`/admin/employees/new?added=${encodeURIComponent(name)}`, 302);
+});
+
+app.get("/admin/employees/:id", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const employee = await getEmployee(context.env, context.req.param("id"));
+  if (!employee) return context.html(messagePage("직원을 찾을 수 없습니다", "직원 목록에서 다시 선택해주세요.", "/admin/employees"), 404);
+
+  return context.html(layout({
+    title: "직원 상세",
+    body: renderEmployeeDetailPage(employee, display.workspaceName)
+  }));
+});
+
+app.post("/admin/employees/:id", async (context) => {
+  const display = await getWorkspaceDisplay(context.env);
+  if (!(await isAdminAuthorized(context.req.header("authorization"), context.env, context.req.header("cookie")))) {
+    return context.html(layout({ title: "사장님 확인", body: renderAdminPinPage({ workspaceName: display.workspaceName }) }), 401);
+  }
+
+  const body = await context.req.parseBody();
+  const action = stringField(body.action);
+  if (action === "deactivate") {
+    await setEmployeeStatus(context.env, context.req.param("id"), "inactive");
+  } else if (action === "rename") {
+    const name = stringField(body.name).trim();
+    if (name) await renameEmployee(context.env, context.req.param("id"), name);
+  }
+
+  return context.redirect("/admin/employees", 302);
+});
+
 app.get("/admin/demo/export.csv", (context) => context.redirect("/admin/export.csv", 302));
 
 app.get("/admin/export.csv", async (context) => {
@@ -553,38 +661,123 @@ async function getWorkspaceDisplay(
 }
 
 async function listRegisteredEmployees(env: Env | undefined, workspaceId = DEFAULT_WORKSPACE_ID): Promise<EmployeeRecord[]> {
-  if (!env?.DB) return seedEmployees;
+  if (!env?.DB) return memoryStore.employees.filter((employee) => (employee.status ?? "registered") === "registered");
 
   const result = await env.DB.prepare(
-    `SELECT id, name, employee_code_hash
+    `SELECT id, name, employee_code_hash, status
      FROM employees
      WHERE workspace_id = ? AND status = ?
      ORDER BY registered_at ASC, name ASC`
-  ).bind(workspaceId, "registered").all<{ id: string; name: string; employee_code_hash: string | null }>();
+  ).bind(workspaceId, "registered").all<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
 
   return (result.results ?? [])
-    .map((row) => ({ id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined }))
+    .map((row) => ({ id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status }))
     .filter((employee) => !isFixtureEmployee(employee));
+}
+
+async function listAllEmployees(env: Env | undefined, workspaceId = DEFAULT_WORKSPACE_ID): Promise<EmployeeRecord[]> {
+  if (!env?.DB) return memoryStore.employees.slice();
+
+  const result = await env.DB.prepare(
+    `SELECT id, name, employee_code_hash, status
+     FROM employees
+     WHERE workspace_id = ?
+     ORDER BY CASE status WHEN 'registered' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, registered_at ASC, name ASC`
+  ).bind(workspaceId).all<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
+
+  return (result.results ?? []).map((row) => ({ id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status }));
 }
 
 async function findRegisteredEmployee(env: Env | undefined, workspaceId: string, employeeId: string): Promise<EmployeeRecord | undefined> {
   if (!employeeId) return undefined;
-  if (!env?.DB) return seedEmployees.find((employee) => employee.id === employeeId);
+  if (!env?.DB) return memoryStore.employees.find((employee) => employee.id === employeeId && (employee.status ?? "registered") === "registered");
 
   const row = await env.DB.prepare(
-    `SELECT id, name, employee_code_hash
+    `SELECT id, name, employee_code_hash, status
      FROM employees
      WHERE workspace_id = ? AND id = ? AND status = ?
      LIMIT 1`
-  ).bind(workspaceId, employeeId, "registered").first<{ id: string; name: string; employee_code_hash: string | null }>();
+  ).bind(workspaceId, employeeId, "registered").first<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
 
   if (!row) return undefined;
-  const employee = { id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined };
+  const employee = { id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status };
   return isFixtureEmployee(employee) ? undefined : employee;
+}
+
+async function getEmployee(env: Env | undefined, employeeId: string, workspaceId = DEFAULT_WORKSPACE_ID): Promise<EmployeeRecord | undefined> {
+  if (!employeeId) return undefined;
+  if (!env?.DB) return memoryStore.employees.find((employee) => employee.id === employeeId);
+
+  const row = await env.DB.prepare(
+    `SELECT id, name, employee_code_hash, status
+     FROM employees
+     WHERE workspace_id = ? AND id = ?
+     LIMIT 1`
+  ).bind(workspaceId, employeeId).first<{ id: string; name: string; employee_code_hash: string | null; status: string }>();
+
+  return row ? { id: row.id, name: row.name, codeHash: row.employee_code_hash ?? undefined, status: row.status } : undefined;
+}
+
+async function createEmployee(env: Env | undefined, workspaceId: string, name: string): Promise<EmployeeRecord> {
+  const employee: EmployeeRecord = {
+    id: crypto.randomUUID(),
+    name,
+    codeHash: await sha256Hex(`${workspaceId}.${name}.${crypto.randomUUID()}`),
+    status: "registered"
+  };
+  const now = new Date().toISOString();
+
+  if (!env?.DB) {
+    memoryStore.employees.push(employee);
+    return employee;
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO employees (id, workspace_id, name, employee_code_hash, status, registered_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(employee.id, workspaceId, name, employee.codeHash, "registered", now).run();
+  return employee;
+}
+
+async function setEmployeeStatus(env: Env | undefined, employeeId: string, status: "registered" | "inactive"): Promise<void> {
+  if (!env?.DB) {
+    const employee = memoryStore.employees.find((item) => item.id === employeeId);
+    if (employee) employee.status = status;
+    return;
+  }
+
+  await env.DB.prepare(`UPDATE employees SET status = ? WHERE id = ? AND workspace_id = ?`)
+    .bind(status, employeeId, DEFAULT_WORKSPACE_ID)
+    .run();
+}
+
+async function renameEmployee(env: Env | undefined, employeeId: string, name: string): Promise<void> {
+  if (!env?.DB) {
+    const employee = memoryStore.employees.find((item) => item.id === employeeId);
+    if (employee) employee.name = name;
+    return;
+  }
+
+  await env.DB.prepare(`UPDATE employees SET name = ? WHERE id = ? AND workspace_id = ?`)
+    .bind(name, employeeId, DEFAULT_WORKSPACE_ID)
+    .run();
 }
 
 function isFixtureEmployee(employee: EmployeeRecord): boolean {
   return fixtureEmployeeIds.has(employee.id);
+}
+
+async function getWorkspaceLocation(env: Env | undefined, workspaceId = DEFAULT_WORKSPACE_ID): Promise<WorkspaceLocation | undefined> {
+  if (!env?.DB) return memoryStore.location;
+
+  const row = await env.DB.prepare(
+    `SELECT latitude, longitude, radius_meters
+     FROM workspaces
+     WHERE id = ?`
+  ).bind(workspaceId).first<{ latitude: number | null; longitude: number | null; radius_meters: number | null }>();
+
+  if (row?.latitude === null || row?.longitude === null || row?.latitude === undefined || row?.longitude === undefined) return undefined;
+  return { latitude: row.latitude, longitude: row.longitude, radiusMeters: row.radius_meters ?? 80 };
 }
 
 function findEmployeeInList(employeeId: string | undefined, employees: EmployeeRecord[]): EmployeeRecord | undefined {
@@ -654,7 +847,8 @@ async function completeClockAttempt(
   if (!employee) return { ok: false, reason: "등록된 직원을 찾을 수 없습니다." };
 
   const occurredAt = new Date().toISOString();
-  const riskFlags = buildRiskFlags(input);
+  const workspaceLocation = await getWorkspaceLocation(env, input.claims.workspaceId);
+  const riskFlags = buildRiskFlags(input, workspaceLocation);
 
   if (!env?.DB) {
     const durableStore = getDurableStore(env);
@@ -844,7 +1038,7 @@ function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskN
   const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=330x330&data=${encodeURIComponent(input.scanUrl)}`;
 
   return `
-    <div data-screen-label="A1 키오스크 태블릿 정상" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+    <div data-kiosk-screen data-screen-label="A1 키오스크 태블릿 정상" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -884,6 +1078,67 @@ function renderKioskPage(input: { scanUrl: string; workspaceName: string; kioskN
             <a data-admin-view-link href="/admin/today" style="color:#8A8478;text-decoration:none;user-select:none;cursor:pointer">사장님 열람</a>
           </div>
       ${renderKioskScript()}
+    </div>
+  `;
+}
+
+
+function renderTabletKioskStatePage(input: { label: string; mode: "offline" | "qr-failed"; workspaceName: string; kioskName: string }): string {
+  const offline = input.mode === "offline";
+  const title = offline ? "네트워크 연결이 끊겼습니다" : "새 큐알을 만들지 못했습니다";
+  const badge = offline ? "큐알 사용 중지" : "큐알 갱신 실패";
+  const detail = offline
+    ? "연결이 돌아오면 자동으로 새 큐알을 보여드립니다."
+    : "잠시 뒤 다시 시도합니다. 만료된 큐알은 스캔해도 기록되지 않습니다.";
+  const footer = offline ? "이미 저장된 기록은 사라지지 않습니다" : "5초 후 자동 재시도";
+  return `
+    <div data-kiosk-screen data-screen-label="${input.label}" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
+        <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
+        <span style="font-size:16px;font-weight:800">출근도장</span>
+        <span style="width:1px;height:16px;background:#E0D8C6"></span>
+        <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(input.workspaceName)}</span>
+        <span style="font-size:12px;font-weight:600;color:#6E6A61;border:1px solid #E0D8C6;border-radius:999px;padding:4px 10px">${escapeHtml(input.kioskName)}</span>
+        <span style="flex:1"></span>
+        <span style="background:#F7EDD8;color:#93610F;font-size:12px;font-weight:800;padding:5px 11px;border-radius:999px">${badge}</span>
+      </div>
+      <div style="flex:1;display:grid;grid-template-columns:0.95fr 1.05fr;gap:30px;padding:42px;align-items:center">
+        <div style="display:flex;flex-direction:column;align-items:flex-start;text-align:left">
+          <div style="width:72px;height:72px;border-radius:22px;background:#F7EDD8;color:#93610F;display:grid;place-items:center;font-size:30px;font-weight:900">!</div>
+          <h1 style="font-size:54px;line-height:1.04;letter-spacing:-0.055em;color:#17191C;margin:24px 0 0">${title}</h1>
+          <p style="font-size:18px;line-height:1.6;color:#6E6A61;margin:18px 0 0">${detail}</p>
+        </div>
+        <div style="background:#FFFDF8;border:1px solid #E8E1D3;border-radius:28px;min-height:360px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;box-shadow:0 14px 30px rgba(52,38,18,0.08)">
+          <div style="width:220px;height:220px;border-radius:24px;border:2px dashed #D8CDBB;background:#F7F3EA;display:grid;place-items:center;color:#93610F;font-size:22px;font-weight:900">${offline ? "오프라인" : "만료됨"}</div>
+          <div style="font-size:16px;color:#22262B;font-weight:800;margin-top:18px">${offline ? "연결 대기 중" : "만료됨 — 스캔해도 기록되지 않습니다"}</div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:16px;padding:13px 28px;border-top:1px solid #E8E1D3;font-size:13px;color:#8A8478;background:#FFFDF8">
+        <span>${footer}</span>
+        <a data-admin-view-link href="/admin/today" style="color:#8A8478;text-decoration:none;user-select:none;cursor:pointer">사장님 열람</a>
+      </div>
+    </div>
+  `;
+}
+
+function renderPhoneKioskStatePage(input: { label: string; offline: boolean; workspaceName: string; kioskName: string }): string {
+  return `
+    <div data-kiosk-screen data-screen-label="${input.label}" style="width:100vw;height:100dvh;min-height:100vh;background:#FDFBF6;border:0;border-radius:0;overflow:auto;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0;padding:38px 22px 28px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
+        <span style="font-size:13.5px;font-weight:800">출근도장</span>
+        <span style="flex:1"></span>
+        <span style="background:${input.offline ? "#F7EDD8" : "#E8F3EC"};color:${input.offline ? "#93610F" : "#217A4B"};font-size:11.5px;font-weight:800;padding:5px 10px;border-radius:999px">${input.offline ? "오프라인" : "정상"}</span>
+      </div>
+      <h1 style="font-size:30px;line-height:1.2;letter-spacing:-0.04em;color:#17191C;margin:36px 0 0">${input.offline ? "네트워크 끊김" : "카메라로 큐알을 찍어주세요"}</h1>
+      <p style="font-size:15px;color:#6E6A61;line-height:1.65;margin:12px 0 0">${input.offline ? "네트워크 끊김 — 연결되면 자동 복구됩니다" : "카메라로 찍고 → 이름 선택 → 출근/퇴근"}</p>
+      <div style="background:#FFFFFF;border:1px solid #E8E1D3;border-radius:22px;padding:18px;margin-top:28px;display:grid;gap:12px">
+        ${kioskStep("1", "카메라로 큐알 찍기")}
+        ${kioskStep("2", "이름 선택")}
+        ${kioskStep("3", "출근/퇴근")}
+      </div>
+      <span style="flex:1"></span>
+      <div style="font-size:14px;font-weight:800;color:#22262B;text-align:center">${input.offline ? "사장님 열람 — 키오스크에서" : `새 큐알까지 ${QR_TTL_SECONDS}초`}</div>
     </div>
   `;
 }
@@ -982,7 +1237,7 @@ function renderScanPage(input: {
 
 function renderFirstVisitPanel(workspaceName: string, employees: EmployeeRecord[]): string {
   return `
-    <section data-screen-label="2a 기기 기억 첫 1회" data-step="select" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
+    <section data-screen-label="B1 직원 이름 선택" data-flow-label="2a 기기 기억 첫 1회" data-step="select" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
         <span style="font-size:13.5px;font-weight:800">출근도장</span>
@@ -990,7 +1245,7 @@ function renderFirstVisitPanel(workspaceName: string, employees: EmployeeRecord[
         <span style="background:#F1EDE3;color:#6E6A61;font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:999px">첫 방문</span>
       </div>
       <h1 style="margin:24px 0 0;font-size:25px;font-weight:800;line-height:1.3;color:#17191C">${escapeHtml(workspaceName)}</h1>
-      <div style="font-size:15px;color:#6E6A61;margin-top:8px">처음이시네요. 이름을 한 번만 선택해주세요.</div>
+      <div style="font-size:15px;color:#6E6A61;margin-top:8px">이름을 선택해주세요 · 카운터 태블릿</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px">
         ${employees.map((employee) => `
           <button type="button" data-employee-button data-employee-id="${escapeHtml(employee.id)}" data-employee-name="${escapeHtml(employee.name)}" style="border:1px solid #E8E1D3;background:#FFFFFF;border-radius:14px;height:54px;display:grid;place-items:center;font-size:15.5px;font-weight:800;color:#22262B;cursor:pointer">${escapeHtml(employee.name)}</button>
@@ -1015,7 +1270,7 @@ function renderClockPanel(input: { employee: EmployeeRecord; hiddenAttr: string;
     : `<button type="button" data-back-select style="border:0;background:transparent;text-align:center;font-size:13.5px;font-weight:700;color:#6E6A61;padding:8px 0;cursor:pointer">내가 아니에요 — 이름 선택으로</button>`;
 
   return `
-    <section data-screen-label="2a 기기 기억 매일" data-step="clock"${input.hiddenAttr} style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
+    <section data-screen-label="B2 출근/퇴근 선택" data-flow-label="2a 기기 기억 매일" data-step="clock"${input.hiddenAttr} style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;padding:74px 22px 48px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:22px;height:22px;border-radius:6px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:11px;font-weight:800">출</div>
         <span style="font-size:13.5px;font-weight:800">출근도장</span>
@@ -1155,13 +1410,17 @@ function renderSuccessPage(input: { employeeName: string; eventType: ClockEventT
   const hasRisk = input.riskFlags.length > 0;
   const stampColor = hasRisk ? "#93610F" : "#217A4B";
   const stampBg = hasRisk ? "#F7EDD8" : "#E8F3EC";
-  const note = hasRisk
-    ? "기록은 저장됐고, 사장님 화면에 확인 표시가 남습니다."
-    : "매장 근처 기록으로 저장되었습니다.";
+  const outsideRadius = input.riskFlags.includes("location_out_of_radius");
+  const screenLabel = outsideRadius ? "B5 기록 완료 위치 벗어남" : "B4 기록 완료";
+  const note = outsideRadius
+    ? "기록이 저장되었습니다. 이 창은 닫으셔도 됩니다."
+    : hasRisk
+      ? "기록은 저장됐고, 사장님 화면에 확인 표시가 남습니다."
+      : "매장 근처 기록으로 저장되었습니다.";
 
   return `
     <div class="staff-screen">
-      <section data-screen-label="B4 기록 완료" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
+      <section data-screen-label="${screenLabel}" style="min-height:inherit;box-sizing:border-box;background:#FDFBF6;display:flex;flex-direction:column;align-items:center;text-align:center;padding:74px 22px 48px">
         <span style="flex:1"></span>
         <div style="width:92px;height:92px;border-radius:50%;background:${stampBg};display:grid;place-items:center;color:${stampColor};font-size:38px;font-weight:900;border:6px solid #FFFFFF;box-shadow:0 12px 26px rgba(52,38,18,0.10)">도장</div>
         <h1 style="margin:22px 0 0;font-size:26px;font-weight:800;line-height:1.3;color:#17191C">${actionLabel} 기록 완료</h1>
@@ -1293,7 +1552,7 @@ function renderKioskLoginPage(options: { workspaceName: string; errorMessage?: s
   }).join("");
 
   return `
-    <div data-screen-label="A5 키오스크 로그인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+    <div data-kiosk-screen data-screen-label="K1 키오스크 로그인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
       <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
         <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
         <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -1342,7 +1601,7 @@ function renderAdminPinPage(options: AdminPinPageOptions = {}): string {
   }).join("");
 
   return `
-    <div data-screen-label="A6 사장님 확인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+    <div data-kiosk-screen data-screen-label="A6 사장님 확인 PIN" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -1460,7 +1719,7 @@ function renderAdminTodayPage(events: AttendanceEventRecord[], employees: Employ
     : `<div style="background:#FFFFFF;border:1px dashed #D8CDBB;border-radius:12px;padding:18px 16px;font-size:14px;color:#6E6A61;font-weight:700">등록된 직원이 없습니다. 사장님 화면에서 직원을 먼저 등록해주세요.</div>`;
 
   return `
-    <div data-screen-label="A7 사장님 열람 오늘 기록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
+    <div data-kiosk-screen data-screen-label="A7 사장님 열람 오늘 기록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;border:0;border-radius:0;overflow:hidden;display:flex;flex-direction:column;box-shadow:none;scroll-margin-top:0">
           <div style="display:flex;align-items:center;gap:12px;padding:10px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
             <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
             <span style="font-size:16px;font-weight:800">출근도장</span>
@@ -1530,6 +1789,94 @@ function formatTimeOnly(iso: string): string {
   }).format(new Date(iso));
 }
 
+
+function renderEmployeeListPage(employees: EmployeeRecord[], workspaceName: string): string {
+  const active = employees.filter((employee) => (employee.status ?? "registered") === "registered").length;
+  const inactive = employees.filter((employee) => employee.status === "inactive").length;
+  const rows = employees.length
+    ? employees.map((employee) => `
+      <a href="/admin/employees/${escapeHtml(employee.id)}" style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;background:#FFFFFF;border:1px solid #E8E1D3;border-radius:16px;padding:15px 18px;text-decoration:none;color:#22262B">
+        <span style="font-size:17px;font-weight:800">${escapeHtml(employee.name)}</span>
+        <span style="font-size:12px;font-weight:800;border-radius:999px;padding:5px 10px;background:${employee.status === "inactive" ? "#F1EDE3" : "#E8F3EC"};color:${employee.status === "inactive" ? "#6E6A61" : "#217A4B"}">${employee.status === "inactive" ? "비활성" : "활동"}</span>
+      </a>
+    `).join("")
+    : `<div style="background:#FFFFFF;border:1px dashed #D8CDBB;border-radius:16px;padding:22px;color:#6E6A61;font-weight:800">등록된 직원이 없습니다.</div>`;
+
+  return `
+    <div data-kiosk-screen data-screen-label="D1 직원 관리 목록" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;display:flex;flex-direction:column;overflow:auto">
+      <div style="display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid #E8E1D3;background:#FFFDF8">
+        <div style="width:30px;height:30px;border-radius:8px;background:#C13A2A;color:#FFFFFF;display:grid;place-items:center;font-size:15px;font-weight:800">출</div>
+        <span style="font-size:16px;font-weight:800">출근도장</span>
+        <span style="width:1px;height:16px;background:#E0D8C6"></span>
+        <span style="font-size:15px;font-weight:700;color:#22262B">${escapeHtml(workspaceName)}</span>
+        <span style="background:#C13A2A;color:#FFFFFF;font-size:12px;font-weight:800;padding:5px 11px;border-radius:999px">직원 관리</span>
+        <span style="flex:1"></span>
+        <a href="/admin/today" style="border:1.5px solid #E0D8C6;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;background:#FFFFFF;color:#22262B;text-decoration:none">오늘 기록</a>
+        <a href="/admin/employees/new" style="border:1.5px solid #C13A2A;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:900;background:#C13A2A;color:#FFFFFF;text-decoration:none">+ 직원 추가</a>
+      </div>
+      <div style="flex:1;padding:26px 28px;display:grid;grid-template-columns:0.7fr 1.3fr;gap:24px;align-items:start">
+        <section style="background:#FFFDF8;border:1px solid #E8E1D3;border-radius:24px;padding:24px">
+          <h1 style="font-size:36px;line-height:1.08;letter-spacing:-0.05em;color:#17191C;margin:0">직원 관리</h1>
+          <p style="font-size:15px;line-height:1.65;color:#6E6A61;margin:12px 0 0">${escapeHtml(workspaceName)} · 활동 ${active}명 · 비활성 ${inactive}명</p>
+          <div style="background:#F7EDD8;color:#93610F;border-radius:14px;padding:13px 15px;font-size:13px;font-weight:800;line-height:1.5;margin-top:22px">삭제 대신 비활성화합니다. 이전 출퇴근 기록은 그대로 보존됩니다.</div>
+        </section>
+        <section style="display:grid;gap:10px">${rows}</section>
+      </div>
+    </div>
+  `;
+}
+
+function renderEmployeeNewPage(added: string | undefined, workspaceName: string, errorMessage?: string): string {
+  const notice = errorMessage
+    ? `<div style="background:#F9E9E5;border:1px solid #F2B8AA;border-radius:12px;padding:11px 14px;color:#B42318;font-size:13px;font-weight:800">${escapeHtml(errorMessage)}</div>`
+    : added
+      ? `<div style="background:#E8F3EC;border:1px solid #C8E4D2;border-radius:12px;padding:11px 14px;color:#217A4B;font-size:13px;font-weight:800">${escapeHtml(added)} 님을 추가했습니다</div>`
+      : "";
+  return `
+    <div data-kiosk-screen data-screen-label="D2 직원 추가" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;display:grid;place-items:center;padding:28px;overflow:auto">
+      <section style="width:min(520px,100%);background:#FFFDF8;border:1px solid #E8E1D3;border-radius:28px;box-shadow:0 18px 50px rgba(93,70,41,.11);padding:30px">
+        <div class="brand-row">${brandMark()}<span class="pill green">직원 추가</span></div>
+        <h1 style="font-size:38px;line-height:1.08;letter-spacing:-0.05em;color:#17191C;margin:28px 0 0">직원 추가</h1>
+        <p style="font-size:15px;line-height:1.65;color:#6E6A61;margin:12px 0 22px">이름만 있으면 됩니다. 전화번호·주민번호는 받지 않습니다.</p>
+        <form method="post" action="/admin/employees" style="display:grid;gap:14px">
+          ${notice}
+          <label style="display:grid;gap:8px;font-size:13px;font-weight:800;color:#3C424A">직원 이름
+            <input name="name" autocomplete="off" placeholder="예: 김민지" style="height:54px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFFFF;color:#22262B" />
+          </label>
+          <button type="submit" style="border:0;background:#C13A2A;color:#FFFFFF;border-radius:16px;min-height:56px;font-size:16px;font-weight:900;cursor:pointer">추가하고 계속</button>
+          <a href="/admin/employees" style="display:grid;place-items:center;text-decoration:none;border:1px solid #E0D8C6;background:#FFFFFF;color:#22262B;border-radius:16px;min-height:52px;font-size:15px;font-weight:900">완료</a>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderEmployeeDetailPage(employee: EmployeeRecord, workspaceName: string): string {
+  const isInactive = employee.status === "inactive";
+  return `
+    <div data-kiosk-screen data-screen-label="D3 직원 상세 시트" style="width:100vw;height:100dvh;min-height:100vh;background:#F7F3EA;display:grid;place-items:center;padding:28px;overflow:auto">
+      <section style="width:min(560px,100%);background:#FFFDF8;border:1px solid #E8E1D3;border-radius:28px;box-shadow:0 18px 50px rgba(93,70,41,.11);padding:30px">
+        <div class="brand-row">${brandMark()}<span class="pill">${isInactive ? "비활성" : "활동"}</span></div>
+        <h1 style="font-size:38px;line-height:1.08;letter-spacing:-0.05em;color:#17191C;margin:28px 0 0">${escapeHtml(employee.name)}</h1>
+        <p style="font-size:15px;line-height:1.65;color:#6E6A61;margin:12px 0 22px">${escapeHtml(workspaceName)} 직원 상세입니다.</p>
+        <div style="display:grid;gap:10px">
+          <button type="button" style="border:1px solid #E0D8C6;background:#FFFFFF;color:#22262B;border-radius:16px;min-height:52px;font-size:15px;font-weight:900">등록 링크 복사</button>
+          <form method="post" action="/admin/employees/${escapeHtml(employee.id)}" style="display:grid;grid-template-columns:1fr auto;gap:8px">
+            <input type="hidden" name="action" value="rename" />
+            <input name="name" value="${escapeHtml(employee.name)}" style="height:52px;border:1px solid #E8E1D3;border-radius:14px;padding:0 14px;background:#FFFFFF;color:#22262B" />
+            <button type="submit" style="border:0;background:#22262B;color:#FFFFFF;border-radius:14px;padding:0 16px;font-size:14px;font-weight:900">이름 수정</button>
+          </form>
+          <form method="post" action="/admin/employees/${escapeHtml(employee.id)}">
+            <input type="hidden" name="action" value="deactivate" />
+            <button type="submit" ${isInactive ? "disabled" : ""} style="width:100%;border:1px solid #EBDDB9;background:#F7EDD8;color:#93610F;border-radius:16px;min-height:52px;font-size:15px;font-weight:900;cursor:pointer">비활성화</button>
+          </form>
+          <a href="/admin/employees" style="display:grid;place-items:center;text-decoration:none;border:1px solid #E0D8C6;background:#FFFFFF;color:#22262B;border-radius:16px;min-height:52px;font-size:15px;font-weight:900">닫기</a>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function renderEventList(events: AttendanceEventRecord[], title = "최근 기록"): string {
   if (events.length === 0) {
     return `<section class="list-card"><h2>${escapeHtml(title)}</h2><p class="small">아직 기록이 없습니다.</p></section>`;
@@ -1567,8 +1914,9 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
     <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.css" />
     <style>
       :root { color-scheme: light; font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; background: #E9EAEE; color: #22262B; }
+      html { width: 100%; min-height: 100%; margin: 0; }
       * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; background: #E9EAEE; }
+      body { margin: 0; width: 100vw; min-height: 100dvh; background: #E9EAEE; overflow-x: hidden; }
       main { min-height: 100vh; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding: 0; }
       button, input { font: inherit; }
       [hidden] { display: none !important; }
@@ -1596,6 +1944,7 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
       .button.ghost { background: #FDFBF6; color: #6E6A61; }
       .staff-screen { width: 100vw; min-height: 100dvh; height: 100dvh; border-radius: 0; background: #FDFBF6; overflow: auto; position: relative; box-shadow: none; border: 0; }
       main:has(.staff-screen) { align-items: stretch; justify-content: stretch; padding: 0; background: #FDFBF6; }
+      main:has([data-kiosk-screen]) { align-items: stretch; justify-content: stretch; padding: 0; background: #F7F3EA; }
       .event-list { display: grid; gap: 10px; }
       .event-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: #FFF8ED; color: #3C424A; }
       .event-row em { color: #9F2E22; font-style: normal; font-weight: 800; }
@@ -1629,17 +1978,34 @@ function parseLocationConsent(value: string): LocationConsent {
   return "unavailable";
 }
 
-function buildRiskFlags(input: { latitude?: number; longitude?: number; locationConsent: LocationConsent }): string[] {
-  if (input.latitude !== undefined && input.longitude !== undefined) return [];
+function buildRiskFlags(input: { latitude?: number; longitude?: number; locationConsent: LocationConsent }, workspaceLocation?: WorkspaceLocation): string[] {
+  const flags: string[] = [];
+  if (input.latitude === undefined || input.longitude === undefined) {
+    flags.push("location_missing");
+    if (input.locationConsent === "skipped") flags.push("location_skipped");
+    return flags;
+  }
 
-  const flags = ["location_missing"];
-  if (input.locationConsent === "skipped") flags.push("location_skipped");
+  if (workspaceLocation) {
+    const distance = distanceInMeters(input.latitude, input.longitude, workspaceLocation.latitude, workspaceLocation.longitude);
+    if (distance > workspaceLocation.radiusMeters) flags.push("location_out_of_radius");
+  }
   return flags;
+}
+
+function distanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const earthRadius = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 const RISK_FLAG_UI_LABELS: Record<string, string> = {
   location_missing: "위치 없음",
-  location_skipped: "위치 건너뜀"
+  location_skipped: "위치 건너뜀",
+  location_out_of_radius: "사업장 반경 밖"
 };
 
 function formatRiskSummary(flags: string[]): string {
@@ -1916,7 +2282,7 @@ export class AttendanceStore {
         occurredAt: string;
         riskFlags: string[];
       }>();
-      const employee = seedEmployees.find((item) => item.id === body.input.employeeId);
+      const employee = localDemoEmployees.find((item) => item.id === body.input.employeeId);
       if (!employee) return Response.json({ ok: false, reason: "직원을 찾을 수 없습니다." });
 
       const key = `consumption:${body.input.qrNonceHash}`;
