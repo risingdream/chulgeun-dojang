@@ -11,6 +11,7 @@ type Env = {
 };
 
 type ClockEventType = "clock_in" | "clock_out" | "break_start" | "break_end";
+type LocationConsent = "granted" | "skipped" | "unavailable";
 
 type ConsumptionRecord = {
   qrNonceHash: string;
@@ -42,6 +43,8 @@ const DEFAULT_WORKSPACE_ID = "default-workspace";
 const DEFAULT_KIOSK_ID = "main-kiosk";
 const QR_TTL_SECONDS = 30;
 const LOCAL_SECRET = "local-dev-secret";
+const REMEMBERED_EMPLOYEE_COOKIE = "rememberedEmployeeId";
+const REMEMBERED_EMPLOYEE_MAX_AGE = 60 * 60 * 24 * 365;
 const seedEmployees = [
   { id: "employee-a", name: "직원 A", codeHash: "employee-a-code" },
   { id: "employee-b", name: "직원 B", codeHash: "employee-b-code" },
@@ -132,7 +135,6 @@ app.get("/kiosk", async (context) => {
   );
   const origin = new URL(context.req.url).origin;
   const scanUrl = `${origin}/scan?token=${encodeURIComponent(token)}`;
-  const events = await listRecentEvents(context.env);
 
   return context.html(layout({
     title: "출근도장 키오스크",
@@ -141,18 +143,22 @@ app.get("/kiosk", async (context) => {
       <section class="hero-card kiosk">
         <div class="eyebrow">Production kiosk</div>
         <h1>출근도장 키오스크</h1>
-        <p>큐알은 30초 동안만 살아있고, 첫 스캔 순간 전역 1회 소비됩니다. 스캔되면 다음 큐알을 써야 합니다.</p>
+        <p>큐알은 30초 동안만 살아있고, 스캔되면 전역 1회 소비됩니다. 직원은 자기 폰 카메라로 찍고 출근 또는 퇴근만 누르면 됩니다.</p>
         <div class="qr-wrap">
           <img alt="출근도장 큐알" src="https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(scanUrl)}" />
         </div>
-        <p class="small">카메라 스캔이 어려우면 아래 링크를 직원폰에서 열면 됩니다.</p>
+        <p class="small">새 큐알까지 30초 · 만료된 큐알은 기록되지 않습니다.</p>
         <p><a class="scan-link" href="${escapeHtml(scanUrl)}">${escapeHtml(scanUrl)}</a></p>
         <div class="actions">
           <a class="button" href="/kiosk">새 큐알 받기</a>
-          <a class="button" href="/events">최근 기록 보기</a>
+          <a class="button" href="/admin/today">사장님 확인</a>
         </div>
       </section>
-      ${renderEventList(events)}
+      <section class="list-card">
+        <h2>상태 안내</h2>
+        <p class="small">오프라인이면 큐알을 만들 수 없습니다. 연결되면 자동으로 새 큐알을 만듭니다.</p>
+        <p class="small">큐알 갱신이 실패하면 새 큐알 받기를 눌러 다시 시도해주세요.</p>
+      </section>
     `
   }));
 });
@@ -179,49 +185,11 @@ app.get("/scan", async (context) => {
     );
   }
 
+  const rememberedEmployee = findSeedEmployee(getCookieValue(context.req.header("cookie"), REMEMBERED_EMPLOYEE_COOKIE));
+
   return context.html(layout({
     title: "출퇴근 기록",
-    body: `
-      <section class="hero-card">
-        <div class="eyebrow">Clock event</div>
-        <h1>출퇴근 기록</h1>
-        <p>이 큐알은 지금 소비됐습니다. 같은 큐알은 다른 직원이 다시 쓸 수 없습니다.</p>
-        <form method="post" action="/api/clock" class="form-card">
-          <input type="hidden" name="token" value="${escapeHtml(token)}" />
-          <input type="hidden" name="attemptId" value="${escapeHtml(consumed.attemptId)}" />
-          <label>
-            직원
-            <select name="employeeId">
-              ${seedEmployees.map((employee) => `<option value="${employee.id}">${employee.name}</option>`).join("")}
-            </select>
-          </label>
-          <label>
-            유형
-            <select name="eventType">
-              <option value="clock_in">출근</option>
-              <option value="clock_out">퇴근</option>
-            </select>
-          </label>
-          <input type="hidden" name="latitude" data-location="lat" />
-          <input type="hidden" name="longitude" data-location="lng" />
-          <input type="hidden" name="accuracyMeters" data-location="accuracy" />
-          <button class="button primary" type="submit">기록하기</button>
-          <p class="small" data-location-status>위치 권한은 선택입니다. 허용하면 위험 기록 판단에 사용합니다.</p>
-        </form>
-      </section>
-      <script>
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition((position) => {
-            document.querySelector('[data-location="lat"]').value = position.coords.latitude;
-            document.querySelector('[data-location="lng"]').value = position.coords.longitude;
-            document.querySelector('[data-location="accuracy"]').value = position.coords.accuracy;
-            document.querySelector('[data-location-status]').textContent = '위치 정보가 함께 기록됩니다.';
-          }, () => {
-            document.querySelector('[data-location-status]').textContent = '위치 없이 기록합니다. 위험 플래그가 남을 수 있습니다.';
-          }, { enableHighAccuracy: false, timeout: 2500, maximumAge: 30000 });
-        }
-      </script>
-    `
+    body: renderScanPage({ token, attemptId: consumed.attemptId, rememberedEmployee })
   }));
 });
 
@@ -236,6 +204,8 @@ app.post("/api/clock", async (context) => {
   const latitude = optionalNumber(body.latitude);
   const longitude = optionalNumber(body.longitude);
   const accuracyMeters = optionalNumber(body.accuracyMeters);
+  const locationConsent = parseLocationConsent(stringField(body.locationConsent));
+  const rememberEmployee = stringField(body.rememberEmployee) === "true";
 
   if (!attemptId || !isSeedEmployee(employeeId) || !isClockEventType(eventType)) {
     return context.html(messagePage("기록 실패", "직원 또는 출퇴근 유형이 올바르지 않습니다.", "/kiosk"), 400);
@@ -260,11 +230,16 @@ app.post("/api/clock", async (context) => {
     eventType,
     latitude,
     longitude,
-    accuracyMeters
+    accuracyMeters,
+    locationConsent
   });
 
   if (!result.ok) {
     return context.html(messagePage("기록 실패", result.reason, "/kiosk"), 409);
+  }
+
+  if (rememberEmployee) {
+    context.header("Set-Cookie", buildRememberCookie(employeeId, context.req.url));
   }
 
   return context.html(layout({
@@ -274,14 +249,19 @@ app.post("/api/clock", async (context) => {
         <div class="eyebrow">Saved</div>
         <h1>${eventType === "clock_in" ? "출근" : "퇴근"} 기록 완료</h1>
         <p><strong>${escapeHtml(result.employeeName)}</strong>의 기록이 저장됐습니다.</p>
-        <p class="small">위치: ${latitude && longitude ? "기록됨" : "없음 · 위험 플래그 저장"}</p>
+        <p class="small">${formatRiskSummary(result.riskFlags)}</p>
         <div class="actions">
           <a class="button primary" href="/kiosk">키오스크로 돌아가기</a>
-          <a class="button" href="/events">최근 기록 보기</a>
+          <a class="button" href="/forget-device">기억 해제</a>
         </div>
       </section>
     `
   }));
+});
+
+app.get("/forget-device", (context) => {
+  context.header("Set-Cookie", clearRememberCookie(context.req.url));
+  return context.html(messagePage("기기 기억을 해제했습니다", "다음 스캔부터 이름을 다시 선택합니다.", "/kiosk"));
 });
 
 app.get("/events/demo", (context) => context.redirect("/events", 302));
@@ -298,6 +278,35 @@ app.get("/events", async (context) => {
         <div class="actions"><a class="button primary" href="/kiosk">키오스크 열기</a></div>
       </section>
       ${renderEventList(events)}
+    `
+  }));
+});
+
+app.get("/admin/today", async (context) => {
+  if (!isAdminAuthorized(context.req.header("authorization"), context.env)) {
+    return context.text("관리자 인증이 필요합니다", 401);
+  }
+
+  const events = await listRecentEvents(context.env);
+  const clockIns = events.filter((event) => event.eventType === "clock_in").length;
+  const clockOuts = events.filter((event) => event.eventType === "clock_out").length;
+  const flagged = events.filter((event) => event.riskFlags.length > 0).length;
+
+  return context.html(layout({
+    title: "오늘 기록",
+    body: `
+      <section class="hero-card">
+        <div class="eyebrow">Owner view</div>
+        <h1>오늘 기록</h1>
+        <p>키오스크 공용 화면에는 보이지 않는 사장님 확인 화면입니다.</p>
+        <div class="summary-grid">
+          <div><strong>${clockIns}</strong><span>출근</span></div>
+          <div><strong>${clockOuts}</strong><span>퇴근</span></div>
+          <div><strong>${flagged}</strong><span>확인 필요</span></div>
+        </div>
+        <div class="actions"><a class="button primary" href="/kiosk">키오스크로 돌아가기</a></div>
+      </section>
+      ${renderEventList(events, "오늘 기록")}
     `
   }));
 });
@@ -392,13 +401,14 @@ async function completeClockAttempt(
     latitude?: number;
     longitude?: number;
     accuracyMeters?: number;
+    locationConsent: LocationConsent;
   }
-): Promise<{ ok: true; employeeName: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; employeeName: string; riskFlags: string[] } | { ok: false; reason: string }> {
   const employee = seedEmployees.find((item) => item.id === input.employeeId);
   if (!employee) return { ok: false, reason: "직원을 찾을 수 없습니다." };
 
   const occurredAt = new Date().toISOString();
-  const riskFlags = input.latitude && input.longitude ? [] : ["location_missing"];
+  const riskFlags = buildRiskFlags(input);
 
   if (!env?.DB) {
     const durableStore = getDurableStore(env);
@@ -432,7 +442,7 @@ async function completeClockAttempt(
       accuracyMeters: input.accuracyMeters,
       riskFlags
     });
-    return { ok: true, employeeName: employee.name };
+    return { ok: true, employeeName: employee.name, riskFlags };
   }
 
   const existing = await env.DB.prepare(
@@ -484,7 +494,7 @@ async function completeClockAttempt(
     ).bind(input.employeeId, occurredAt, input.qrNonceHash, input.attemptId)
   ]);
 
-  return { ok: true, employeeName: employee.name };
+  return { ok: true, employeeName: employee.name, riskFlags };
 }
 
 async function listRecentEvents(env?: Env): Promise<AttendanceEventRecord[]> {
@@ -582,21 +592,98 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
   }));
 }
 
-function renderEventList(events: AttendanceEventRecord[]): string {
+function renderScanPage(input: {
+  token: string;
+  attemptId: string;
+  rememberedEmployee?: (typeof seedEmployees)[number];
+}): string {
+  const employeeChoice = input.rememberedEmployee
+    ? `
+        <input type="hidden" name="employeeId" value="${escapeHtml(input.rememberedEmployee.id)}" />
+        <div class="remembered-card">
+          <div class="eyebrow">이 폰 기억됨</div>
+          <h1>${escapeHtml(input.rememberedEmployee.name)} 님</h1>
+          <p class="small">내가 아니면 기록하지 말고 기기 기억을 해제해주세요.</p>
+        </div>
+      `
+    : `
+        <h1>처음이시네요</h1>
+        <p>이름을 한 번만 선택해주세요.</p>
+        <div class="employee-grid" role="radiogroup" aria-label="직원 선택">
+          ${seedEmployees.map((employee, index) => `
+            <label class="employee-choice">
+              <input type="radio" name="employeeId" value="${escapeHtml(employee.id)}" ${index === 0 ? "checked" : ""} />
+              <span>${escapeHtml(employee.name)}</span>
+            </label>
+          `).join("")}
+        </div>
+        <label class="remember-toggle">
+          <input type="checkbox" name="rememberEmployee" value="true" checked />
+          <span><strong>이 폰 기억하기</strong><small>다음부터 이름 선택 없이 바로 기록합니다</small></span>
+        </label>
+      `;
+
+  return `
+    <section class="hero-card">
+      <div class="eyebrow">Clock event</div>
+      <form method="post" action="/api/clock" class="form-card" data-clock-form>
+        <input type="hidden" name="token" value="${escapeHtml(input.token)}" />
+        <input type="hidden" name="attemptId" value="${escapeHtml(input.attemptId)}" />
+        ${employeeChoice}
+        <section class="notice-card">
+          <h2>위치를 확인할까요?</h2>
+          <p>기록하는 순간의 위치 1회만 저장합니다.<br>이동 경로는 수집하지 않습니다.</p>
+          <input type="hidden" name="latitude" data-location="lat" />
+          <input type="hidden" name="longitude" data-location="lng" />
+          <input type="hidden" name="accuracyMeters" data-location="accuracy" />
+          <input type="hidden" name="locationConsent" value="unavailable" data-location="consent" />
+          <p class="small" data-location-status>브라우저 위치 권한은 선택입니다.</p>
+          <button class="button" type="button" data-skip-location>위치 없이 기록</button>
+        </section>
+        <div class="clock-buttons">
+          <button class="button primary clock-in" type="submit" name="eventType" value="clock_in">출근</button>
+          <button class="button clock-out" type="submit" name="eventType" value="clock_out">퇴근</button>
+        </div>
+      </form>
+    </section>
+    <script>
+      const consent = document.querySelector('[data-location="consent"]');
+      const status = document.querySelector('[data-location-status]');
+      document.querySelector('[data-skip-location]')?.addEventListener('click', () => {
+        consent.value = 'skipped';
+        status.textContent = '위치 없이 기록합니다. 위치 없음 표시가 남습니다.';
+      });
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((position) => {
+          document.querySelector('[data-location="lat"]').value = position.coords.latitude;
+          document.querySelector('[data-location="lng"]').value = position.coords.longitude;
+          document.querySelector('[data-location="accuracy"]').value = position.coords.accuracy;
+          consent.value = 'granted';
+          status.textContent = '위치 정보가 함께 기록됩니다.';
+        }, () => {
+          consent.value = consent.value === 'skipped' ? 'skipped' : 'unavailable';
+          status.textContent = '위치 없이 기록할 수 있습니다. 위치 없음 표시가 남습니다.';
+        }, { enableHighAccuracy: false, timeout: 2500, maximumAge: 30000 });
+      }
+    </script>
+  `;
+}
+
+function renderEventList(events: AttendanceEventRecord[], title = "최근 기록"): string {
   if (events.length === 0) {
-    return `<section class="list-card"><h2>최근 기록</h2><p class="small">아직 기록이 없습니다.</p></section>`;
+    return `<section class="list-card"><h2>${escapeHtml(title)}</h2><p class="small">아직 기록이 없습니다.</p></section>`;
   }
 
   return `
     <section class="list-card">
-      <h2>최근 기록</h2>
+      <h2>${escapeHtml(title)}</h2>
       <div class="event-list">
         ${events.map((event) => `
           <article class="event-row">
             <strong>${escapeHtml(event.employeeName)}</strong>
             <span>${event.eventType === "clock_in" ? "출근" : "퇴근"}</span>
             <time>${escapeHtml(formatKoreanTime(event.occurredAt))}</time>
-            ${event.riskFlags.length ? `<em>${event.riskFlags.join(", ")}</em>` : `<em>정상</em>`}
+            ${event.riskFlags.length ? `<em>${escapeHtml(formatRiskSummary(event.riskFlags))}</em>` : `<em>정상</em>`}
           </article>
         `).join("")}
       </div>
@@ -633,6 +720,19 @@ function layout(input: { title: string; body: string; refreshSeconds?: number })
       .form-card { display: grid; gap: 16px; margin-top: 24px; }
       label { display: grid; gap: 8px; color: #bfdbfe; font-weight: 700; }
       select { min-height: 48px; border-radius: 14px; border: 1px solid rgba(148,163,184,.35); padding: 0 14px; background: #0f172a; color: #e2e8f0; font-size: 16px; }
+      .employee-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+      .employee-choice, .remember-toggle, .notice-card { border: 1px solid rgba(148,163,184,.28); border-radius: 18px; padding: 16px; background: rgba(15,23,42,.62); }
+      .employee-choice { display: flex; align-items: center; gap: 10px; min-height: 58px; }
+      .remember-toggle { display: flex; grid-template-columns: none; align-items: center; gap: 12px; }
+      .remember-toggle span { display: grid; gap: 4px; }
+      .remember-toggle small { color: #94a3b8; font-weight: 500; }
+      .remembered-card h1 { margin-top: 8px; }
+      .clock-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .clock-buttons button { min-height: 84px; font-size: 28px; }
+      .clock-out { background: #111827; color: #f8fafc; border-color: rgba(248,250,252,.22); }
+      .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 20px; }
+      .summary-grid div { border: 1px solid rgba(148,163,184,.25); border-radius: 18px; padding: 16px; background: rgba(15,23,42,.62); }
+      .summary-grid strong { display: block; font-size: 34px; color: white; }
       .event-list { display: grid; gap: 10px; }
       .event-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 14px; border-radius: 16px; background: rgba(15,23,42,.72); color: #cbd5e1; }
       .event-row em { color: #93c5fd; font-style: normal; }
@@ -656,6 +756,70 @@ function messagePage(title: string, detail: string, href: string): string {
       </section>
     `
   });
+}
+
+function parseLocationConsent(value: string): LocationConsent {
+  if (value === "granted" || value === "skipped" || value === "unavailable") return value;
+  return "unavailable";
+}
+
+function buildRiskFlags(input: { latitude?: number; longitude?: number; locationConsent: LocationConsent }): string[] {
+  if (input.latitude !== undefined && input.longitude !== undefined) return [];
+
+  const flags = ["location_missing"];
+  if (input.locationConsent === "skipped") flags.push("location_skipped");
+  return flags;
+}
+
+const RISK_FLAG_UI_LABELS: Record<string, string> = {
+  location_missing: "위치 없음",
+  location_skipped: "위치 건너뜀"
+};
+
+function formatRiskSummary(flags: string[]): string {
+  if (flags.length === 0) return "위치 확인됨 · 정상 기록";
+  return flags.map((flag) => RISK_FLAG_UI_LABELS[flag] ?? flag).join(" · ");
+}
+
+function getCookieValue(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  const prefix = `${name}=`;
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length);
+}
+
+function findSeedEmployee(employeeId: string | undefined): (typeof seedEmployees)[number] | undefined {
+  if (!employeeId) return undefined;
+  return seedEmployees.find((employee) => employee.id === decodeURIComponent(employeeId));
+}
+
+function buildRememberCookie(employeeId: string, requestUrl: string): string {
+  return [
+    `${REMEMBERED_EMPLOYEE_COOKIE}=${encodeURIComponent(employeeId)}`,
+    "Path=/",
+    `Max-Age=${REMEMBERED_EMPLOYEE_MAX_AGE}`,
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+function clearRememberCookie(requestUrl: string): string {
+  return [
+    `${REMEMBERED_EMPLOYEE_COOKIE}=`,
+    "Path=/",
+    "Max-Age=0",
+    "SameSite=Lax",
+    isHttpsUrl(requestUrl) ? "Secure" : "",
+    "HttpOnly"
+  ].filter(Boolean).join("; ");
+}
+
+function isHttpsUrl(requestUrl: string): boolean {
+  return new URL(requestUrl).protocol === "https:";
 }
 
 function getQrSecret(env?: Env): string {
@@ -777,6 +941,7 @@ export class AttendanceStore {
           latitude?: number;
           longitude?: number;
           accuracyMeters?: number;
+          locationConsent: LocationConsent;
         };
         occurredAt: string;
         riskFlags: string[];
@@ -811,7 +976,7 @@ export class AttendanceStore {
       });
       await this.state.storage.put({ [key]: record, events: events.slice(0, 50) });
 
-      return Response.json({ ok: true, employeeName: employee.name });
+      return Response.json({ ok: true, employeeName: employee.name, riskFlags: body.riskFlags });
     }
 
     if (url.pathname === "/events") {

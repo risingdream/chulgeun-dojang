@@ -38,13 +38,46 @@ describe("worker app", () => {
     expect(html).toContain("/kiosk");
   });
 
-  it("renders the production kiosk with a scan link", async () => {
+  it("renders the production kiosk with a scan link but no public recent records", async () => {
+    await recordClockEvent();
+
     const response = await app.request("/kiosk");
     const html = await response.text();
 
     expect(response.status).toBe(200);
     expect(html).toContain("출근도장 키오스크");
     expect(html).toContain("/scan?token=");
+    expect(html).toContain("30초");
+    expect(html).not.toContain("최근 기록");
+    expect(html).not.toContain("직원 A</strong>");
+  });
+
+  it("renders first-time scan with remembered-device and location consent copy", async () => {
+    const token = await createToken(`first-device-${crypto.randomUUID()}`);
+    const response = await app.request(`/scan?token=${encodeURIComponent(token)}`);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("이 폰 기억하기");
+    expect(html).toContain("기록하는 순간의 위치 1회만 저장");
+    expect(html).toContain("이동 경로는 수집하지 않습니다");
+    expect(html).toContain("직원 A");
+    expect(html).toContain("출근");
+    expect(html).toContain("퇴근");
+  });
+
+  it("skips employee selection when the device remembered a valid employee", async () => {
+    const token = await createToken(`remembered-device-${crypto.randomUUID()}`);
+    const response = await app.request(`/scan?token=${encodeURIComponent(token)}`, {
+      headers: { cookie: "rememberedEmployeeId=employee-b" }
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("직원 B 님");
+    expect(html).toContain('name="employeeId" value="employee-b"');
+    expect(html).not.toContain("이 폰 기억하기");
+    expect(html).not.toContain("직원 A</span>");
   });
 
   it("consumes a qr token on first scan and rejects replay scans", async () => {
@@ -62,11 +95,50 @@ describe("worker app", () => {
     expect(secondHtml).toContain("이미 갱신된 큐알");
   });
 
-  it("records a clock event after a consumed scan", async () => {
-    const responseHtml = await recordClockEvent();
+  it("sets remembered-device cookie and allows clearing it", async () => {
+    const { html, headers } = await recordClockEvent({ rememberEmployee: "true" });
 
-    expect(responseHtml).toContain("출근 기록 완료");
-    expect(responseHtml).toContain("직원 A");
+    expect(html).toContain("기억 해제");
+    expect(headers.get("set-cookie")).toContain("rememberedEmployeeId=employee-a");
+
+    const forget = await app.request("/forget-device");
+    expect(forget.status).toBe(200);
+    expect(forget.headers.get("set-cookie")).toContain("rememberedEmployeeId=;");
+    expect(await forget.text()).toContain("기기 기억을 해제했습니다");
+  });
+
+  it("records skipped location as an explicit risk flag", async () => {
+    const { html } = await recordClockEvent({ locationConsent: "skipped" });
+
+    expect(html).toContain("위치 없음");
+    expect(html).toContain("위치 건너뜀");
+
+    const response = await app.request(
+      "/admin/export.csv",
+      { headers: { authorization: "Bearer export-token" } },
+      { ADMIN_EXPORT_TOKEN: "export-token" }
+    );
+    const csv = await response.text();
+
+    expect(csv).toContain("위치없음;위치건너뜀");
+  });
+
+  it("protects today admin view and shows records when authorized", async () => {
+    await recordClockEvent();
+
+    const unauthorized = await app.request("/admin/today");
+    expect(unauthorized.status).toBe(401);
+
+    const authorized = await app.request(
+      "/admin/today",
+      { headers: { authorization: "Bearer export-token" } },
+      { ADMIN_EXPORT_TOKEN: "export-token" }
+    );
+    const html = await authorized.text();
+
+    expect(authorized.status).toBe(200);
+    expect(html).toContain("오늘 기록");
+    expect(html).toContain("직원 A");
   });
 
   it("rejects csv export without the admin token", async () => {
@@ -96,7 +168,7 @@ describe("worker app", () => {
   });
 });
 
-async function recordClockEvent(): Promise<string> {
+async function recordClockEvent(options: Record<string, string> = {}): Promise<{ html: string; headers: Headers }> {
   const token = await createToken(`clock-${crypto.randomUUID()}`);
   const scan = await app.request(`/scan?token=${encodeURIComponent(token)}`);
   const html = await scan.text();
@@ -108,7 +180,8 @@ async function recordClockEvent(): Promise<string> {
     token,
     attemptId: attemptId ?? "",
     employeeId: "employee-a",
-    eventType: "clock_in"
+    eventType: "clock_in",
+    ...options
   });
   const response = await app.request("/api/clock", {
     method: "POST",
@@ -117,5 +190,5 @@ async function recordClockEvent(): Promise<string> {
   });
 
   expect(response.status).toBe(200);
-  return response.text();
+  return { html: await response.text(), headers: response.headers };
 }

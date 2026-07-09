@@ -34,7 +34,8 @@ const EVENT_TYPE_LABELS: Record<AttendanceExportEventType, string> = {
 };
 
 const RISK_FLAG_LABELS: Record<string, string> = {
-  location_missing: "위치없음"
+  location_missing: "위치없음",
+  location_skipped: "위치건너뜀"
 };
 
 export function buildAttendanceCsv(rows: AttendanceExportRow[]): string {
