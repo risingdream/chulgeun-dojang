@@ -38,6 +38,13 @@ describe("worker app", () => {
     expect(html).toContain("/kiosk");
   });
 
+  it("redirects the kiosk to setup when the D1 workspace is not configured", async () => {
+    const response = await app.request("/kiosk", {}, { DB: d1WithoutOwnerSetup() });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+  });
+
   it("renders the kiosk from the provided A1 screen, with a scan link but no public recent records", async () => {
     await recordClockEvent();
 
@@ -297,4 +304,19 @@ async function recordClockEvent(options: Record<string, string> = {}): Promise<{
 
   expect(response.status).toBe(200);
   return { html: await response.text(), headers: response.headers };
+}
+
+function d1WithoutOwnerSetup(): D1Database {
+  return {
+    batch: async () => [],
+    prepare: (query: string) => ({
+      bind: () => ({
+        first: async () => query.includes("owner_pin_hash")
+          ? { owner_pin_hash: null, workspace_name: "운영 사업장", kiosk_name: "입구 키오스크" }
+          : null,
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true })
+      })
+    })
+  } as unknown as D1Database;
 }

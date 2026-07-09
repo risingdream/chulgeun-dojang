@@ -170,6 +170,9 @@ app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
 
 app.get("/kiosk", async (context) => {
   await ensureDefaultSeed(context.env);
+  if (context.env?.DB && !(await getOwnerPinHash(context.env))) {
+    return context.redirect("/setup", 302);
+  }
   const display = await getWorkspaceDisplay(context.env);
 
   const now = Math.floor(Date.now() / 1000);
