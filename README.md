@@ -37,13 +37,19 @@ bun run typecheck
 bun run dev
 ```
 
+## 운영 주소
+
+- Production: https://chulgeun-dojang.risingdream.workers.dev
+- 키오스크: https://chulgeun-dojang.risingdream.workers.dev/kiosk
+- 최근 기록: https://chulgeun-dojang.risingdream.workers.dev/events
+
 ## 기록 내려받기
 
 관리자 토큰을 가진 요청만 CSV를 내려받을 수 있습니다.
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_EXPORT_TOKEN" \
-  https://<worker-domain>/admin/demo/export.csv \
+  https://chulgeun-dojang.risingdream.workers.dev/admin/export.csv \
   -o attendance.csv
 ```
 

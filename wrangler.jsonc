@@ -3,11 +3,13 @@
   "name": "chulgeun-dojang",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-08",
+  "workers_dev": true,
+  "preview_urls": false,
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "chulgeun-dojang",
-      "database_id": "replace-with-d1-database-id"
+      "database_id": "3f7e8d9f-f48b-4774-aa52-7b8c0edd3bc8"
     }
   ],
   "vars": {

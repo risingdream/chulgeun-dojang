@@ -38,14 +38,14 @@ type AttendanceEventRecord = {
 
 const app = new Hono<{ Bindings: Env }>();
 
-const DEMO_WORKSPACE_ID = "demo-workspace";
-const DEMO_KIOSK_ID = "demo-kiosk";
-const DEMO_QR_TTL_SECONDS = 30;
+const DEFAULT_WORKSPACE_ID = "default-workspace";
+const DEFAULT_KIOSK_ID = "main-kiosk";
+const QR_TTL_SECONDS = 30;
 const LOCAL_SECRET = "local-dev-secret";
-const demoEmployees = [
-  { id: "demo-a", name: "직원 A", codeHash: "demo-a-code" },
-  { id: "demo-b", name: "직원 B", codeHash: "demo-b-code" },
-  { id: "demo-c", name: "직원 C", codeHash: "demo-c-code" }
+const seedEmployees = [
+  { id: "employee-a", name: "직원 A", codeHash: "employee-a-code" },
+  { id: "employee-b", name: "직원 B", codeHash: "employee-b-code" },
+  { id: "employee-c", name: "직원 C", codeHash: "employee-c-code" }
 ] as const;
 
 const memoryStore = {
@@ -55,7 +55,7 @@ const memoryStore = {
 
 app.onError((error, context) => {
   const detail = error instanceof Error ? error.message : "알 수 없는 오류입니다.";
-  return context.html(messagePage("서버 오류", detail, "/kiosk/demo"), 500);
+  return context.html(messagePage("서버 오류", detail, "/kiosk"), 500);
 });
 
 app.get("/healthz", (context) => {
@@ -81,48 +81,52 @@ app.get("/", (context) => {
           <li>Cloudflare Workers와 D1 기반 서버리스 운영</li>
         </ul>
         <div class="actions">
-          <a class="button primary" href="/demo">테스트 시작</a>
-          <a class="button" href="/kiosk/demo">키오스크 열기</a>
+          <a class="button primary" href="/start">운영 시작</a>
+          <a class="button" href="/kiosk">키오스크 열기</a>
         </div>
       </section>
     `
   }));
 });
 
-app.get("/demo", (context) => {
+app.get("/demo", (context) => context.redirect("/start", 302));
+
+app.get("/start", (context) => {
   return context.html(layout({
-    title: "출근도장 테스트",
+    title: "출근도장 운영 시작",
     body: `
       <section class="hero-card">
-        <div class="eyebrow">Demo flow</div>
-        <h1>테스트하기</h1>
-        <p>아래 키오스크 화면을 열고 큐알 링크를 직원폰에서 열면 출퇴근 흐름을 확인할 수 있습니다.</p>
+        <div class="eyebrow">Production flow</div>
+        <h1>운영 시작</h1>
+        <p>아래 키오스크 화면을 현장 태블릿이나 사장님 기기에서 열고, 직원폰으로 큐알을 찍어 출퇴근을 기록합니다.</p>
         <ol>
           <li>키오스크 화면을 엽니다.</li>
-          <li>화면의 큐알 또는 테스트 링크를 직원폰에서 엽니다.</li>
+          <li>화면의 큐알 또는 링크를 직원폰에서 엽니다.</li>
           <li>직원과 출퇴근 유형을 선택하고 기록합니다.</li>
           <li>같은 큐알을 다시 열면 재사용이 막히는지 확인합니다.</li>
         </ol>
         <div class="actions">
-          <a class="button primary" href="/kiosk/demo">테스트 키오스크 열기</a>
-          <a class="button" href="/events/demo">최근 기록 보기</a>
+          <a class="button primary" href="/kiosk">키오스크 열기</a>
+          <a class="button" href="/events">최근 기록 보기</a>
         </div>
       </section>
     `
   }));
 });
 
-app.get("/kiosk/demo", async (context) => {
-  await ensureDemoSeed(context.env);
+app.get("/kiosk/demo", (context) => context.redirect("/kiosk", 302));
+
+app.get("/kiosk", async (context) => {
+  await ensureDefaultSeed(context.env);
 
   const now = Math.floor(Date.now() / 1000);
   const token = await createQrToken(
     {
-      workspaceId: DEMO_WORKSPACE_ID,
-      kioskId: DEMO_KIOSK_ID,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      kioskId: DEFAULT_KIOSK_ID,
       purpose: "clock",
       issuedAt: now,
-      ttlSeconds: DEMO_QR_TTL_SECONDS
+      ttlSeconds: QR_TTL_SECONDS
     },
     getQrSecret(context.env)
   );
@@ -131,21 +135,21 @@ app.get("/kiosk/demo", async (context) => {
   const events = await listRecentEvents(context.env);
 
   return context.html(layout({
-    title: "테스트 키오스크",
+    title: "출근도장 키오스크",
     refreshSeconds: 25,
     body: `
       <section class="hero-card kiosk">
-        <div class="eyebrow">Demo kiosk</div>
-        <h1>테스트 키오스크</h1>
+        <div class="eyebrow">Production kiosk</div>
+        <h1>출근도장 키오스크</h1>
         <p>큐알은 30초 동안만 살아있고, 첫 스캔 순간 전역 1회 소비됩니다. 스캔되면 다음 큐알을 써야 합니다.</p>
         <div class="qr-wrap">
-          <img alt="출근도장 테스트 큐알" src="https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(scanUrl)}" />
+          <img alt="출근도장 큐알" src="https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(scanUrl)}" />
         </div>
         <p class="small">카메라 스캔이 어려우면 아래 링크를 직원폰에서 열면 됩니다.</p>
         <p><a class="scan-link" href="${escapeHtml(scanUrl)}">${escapeHtml(scanUrl)}</a></p>
         <div class="actions">
-          <a class="button" href="/kiosk/demo">새 큐알 받기</a>
-          <a class="button" href="/events/demo">최근 기록 보기</a>
+          <a class="button" href="/kiosk">새 큐알 받기</a>
+          <a class="button" href="/events">최근 기록 보기</a>
         </div>
       </section>
       ${renderEventList(events)}
@@ -154,12 +158,12 @@ app.get("/kiosk/demo", async (context) => {
 });
 
 app.get("/scan", async (context) => {
-  await ensureDemoSeed(context.env);
+  await ensureDefaultSeed(context.env);
 
   const token = context.req.query("token") ?? "";
   const verified = await verifyQrToken(token, getQrSecret(context.env), Math.floor(Date.now() / 1000));
   if (!verified.ok) {
-    return context.html(messagePage("큐알을 사용할 수 없습니다", reasonToKorean(verified.reason), "/kiosk/demo"), 400);
+    return context.html(messagePage("큐알을 사용할 수 없습니다", reasonToKorean(verified.reason), "/kiosk"), 400);
   }
 
   const qrNonceHash = await hashQrNonce({
@@ -170,7 +174,7 @@ app.get("/scan", async (context) => {
   const consumed = await consumeQrOnScan(context.env, verified.claims, qrNonceHash);
   if (!consumed.ok) {
     return context.html(
-      messagePage("이미 갱신된 큐알입니다", "화면의 새 큐알을 다시 찍어주세요.", "/kiosk/demo"),
+      messagePage("이미 갱신된 큐알입니다", "화면의 새 큐알을 다시 찍어주세요.", "/kiosk"),
       409
     );
   }
@@ -188,7 +192,7 @@ app.get("/scan", async (context) => {
           <label>
             직원
             <select name="employeeId">
-              ${demoEmployees.map((employee) => `<option value="${employee.id}">${employee.name}</option>`).join("")}
+              ${seedEmployees.map((employee) => `<option value="${employee.id}">${employee.name}</option>`).join("")}
             </select>
           </label>
           <label>
@@ -222,7 +226,7 @@ app.get("/scan", async (context) => {
 });
 
 app.post("/api/clock", async (context) => {
-  await ensureDemoSeed(context.env);
+  await ensureDefaultSeed(context.env);
 
   const body = await context.req.parseBody();
   const token = stringField(body.token);
@@ -233,13 +237,13 @@ app.post("/api/clock", async (context) => {
   const longitude = optionalNumber(body.longitude);
   const accuracyMeters = optionalNumber(body.accuracyMeters);
 
-  if (!attemptId || !isDemoEmployee(employeeId) || !isClockEventType(eventType)) {
-    return context.html(messagePage("기록 실패", "직원 또는 출퇴근 유형이 올바르지 않습니다.", "/kiosk/demo"), 400);
+  if (!attemptId || !isSeedEmployee(employeeId) || !isClockEventType(eventType)) {
+    return context.html(messagePage("기록 실패", "직원 또는 출퇴근 유형이 올바르지 않습니다.", "/kiosk"), 400);
   }
 
   const verified = await verifyQrToken(token, getQrSecret(context.env), Math.floor(Date.now() / 1000));
   if (!verified.ok) {
-    return context.html(messagePage("기록 실패", reasonToKorean(verified.reason), "/kiosk/demo"), 400);
+    return context.html(messagePage("기록 실패", reasonToKorean(verified.reason), "/kiosk"), 400);
   }
 
   const qrNonceHash = await hashQrNonce({
@@ -260,7 +264,7 @@ app.post("/api/clock", async (context) => {
   });
 
   if (!result.ok) {
-    return context.html(messagePage("기록 실패", result.reason, "/kiosk/demo"), 409);
+    return context.html(messagePage("기록 실패", result.reason, "/kiosk"), 409);
   }
 
   return context.html(layout({
@@ -272,15 +276,17 @@ app.post("/api/clock", async (context) => {
         <p><strong>${escapeHtml(result.employeeName)}</strong>의 기록이 저장됐습니다.</p>
         <p class="small">위치: ${latitude && longitude ? "기록됨" : "없음 · 위험 플래그 저장"}</p>
         <div class="actions">
-          <a class="button primary" href="/kiosk/demo">키오스크로 돌아가기</a>
-          <a class="button" href="/events/demo">최근 기록 보기</a>
+          <a class="button primary" href="/kiosk">키오스크로 돌아가기</a>
+          <a class="button" href="/events">최근 기록 보기</a>
         </div>
       </section>
     `
   }));
 });
 
-app.get("/events/demo", async (context) => {
+app.get("/events/demo", (context) => context.redirect("/events", 302));
+
+app.get("/events", async (context) => {
   const events = await listRecentEvents(context.env);
   return context.html(layout({
     title: "최근 기록",
@@ -288,15 +294,17 @@ app.get("/events/demo", async (context) => {
       <section class="hero-card">
         <div class="eyebrow">Events</div>
         <h1>최근 기록</h1>
-        <p>테스트 사업장의 최근 출퇴근 이벤트입니다.</p>
-        <div class="actions"><a class="button primary" href="/kiosk/demo">키오스크 열기</a></div>
+        <p>운영 사업장의 최근 출퇴근 이벤트입니다.</p>
+        <div class="actions"><a class="button primary" href="/kiosk">키오스크 열기</a></div>
       </section>
       ${renderEventList(events)}
     `
   }));
 });
 
-app.get("/admin/demo/export.csv", async (context) => {
+app.get("/admin/demo/export.csv", (context) => context.redirect("/admin/export.csv", 302));
+
+app.get("/admin/export.csv", async (context) => {
   if (!isAdminAuthorized(context.req.header("authorization"), context.env)) {
     return context.text("관리자 인증이 필요합니다", 401);
   }
@@ -308,27 +316,27 @@ app.get("/admin/demo/export.csv", async (context) => {
   return new Response(csv, {
     headers: {
       "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="attendance-demo-workspace-${date}.csv"`,
+      "content-disposition": `attachment; filename="attendance-default-workspace-${date}.csv"`,
       "cache-control": "no-store"
     }
   });
 });
 
-async function ensureDemoSeed(env?: Env): Promise<void> {
+async function ensureDefaultSeed(env?: Env): Promise<void> {
   if (!env?.DB) return;
 
   await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO workspaces (id, name, latitude, longitude, radius_meters, owner_email_hash)
        VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(DEMO_WORKSPACE_ID, "테스트 사업장", 37.5133, 127.1002, 80, "demo-owner"),
+    ).bind(DEFAULT_WORKSPACE_ID, "운영 사업장", 37.5133, 127.1002, 80, "owner"),
     env.DB.prepare(`INSERT OR IGNORE INTO kiosks (id, workspace_id, name, status) VALUES (?, ?, ?, ?)`)
-      .bind(DEMO_KIOSK_ID, DEMO_WORKSPACE_ID, "테스트 키오스크", "active"),
-    ...demoEmployees.map((employee) =>
+      .bind(DEFAULT_KIOSK_ID, DEFAULT_WORKSPACE_ID, "입구 키오스크", "active"),
+    ...seedEmployees.map((employee) =>
       env.DB!.prepare(
         `INSERT OR IGNORE INTO employees (id, workspace_id, name, employee_code_hash, status, registered_at)
          VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(employee.id, DEMO_WORKSPACE_ID, employee.name, employee.codeHash, "registered", new Date().toISOString())
+      ).bind(employee.id, DEFAULT_WORKSPACE_ID, employee.name, employee.codeHash, "registered", new Date().toISOString())
     )
   ]);
 }
@@ -386,7 +394,7 @@ async function completeClockAttempt(
     accuracyMeters?: number;
   }
 ): Promise<{ ok: true; employeeName: string } | { ok: false; reason: string }> {
-  const employee = demoEmployees.find((item) => item.id === input.employeeId);
+  const employee = seedEmployees.find((item) => item.id === input.employeeId);
   if (!employee) return { ok: false, reason: "직원을 찾을 수 없습니다." };
 
   const occurredAt = new Date().toISOString();
@@ -498,7 +506,7 @@ async function listRecentEvents(env?: Env): Promise<AttendanceEventRecord[]> {
      WHERE e.workspace_id = ?
      ORDER BY e.occurred_at DESC
      LIMIT 12`
-  ).bind(DEMO_WORKSPACE_ID).all<{
+  ).bind(DEFAULT_WORKSPACE_ID).all<{
     id: string;
     workspace_id: string;
     employee_id: string;
@@ -526,9 +534,9 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
     const events = await listRecentEvents(env);
     return events.slice().reverse().map((event) => ({
       id: event.id,
-      workspaceName: "테스트 사업장",
+      workspaceName: "운영 사업장",
       employeeName: event.employeeName,
-      kioskName: "테스트 키오스크",
+      kioskName: "입구 키오스크",
       eventType: event.eventType,
       occurredAt: event.occurredAt,
       latitude: event.latitude,
@@ -547,7 +555,7 @@ async function listExportRows(env?: Env): Promise<AttendanceExportRow[]> {
      JOIN kiosks k ON k.id = e.kiosk_id
      WHERE e.workspace_id = ?
      ORDER BY e.occurred_at ASC`
-  ).bind(DEMO_WORKSPACE_ID).all<{
+  ).bind(DEFAULT_WORKSPACE_ID).all<{
     id: string;
     workspace_name: string;
     employee_name: string;
@@ -693,8 +701,8 @@ function optionalNumber(value: FormDataEntryValue | FormDataEntryValue[] | undef
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function isDemoEmployee(employeeId: string): boolean {
-  return demoEmployees.some((employee) => employee.id === employeeId);
+function isSeedEmployee(employeeId: string): boolean {
+  return seedEmployees.some((employee) => employee.id === employeeId);
 }
 
 function isClockEventType(eventType: string): eventType is ClockEventType {
@@ -728,7 +736,7 @@ async function sha256Hex(value: string): Promise<string> {
 
 function getDurableStore(env?: Env): DurableObjectStub | undefined {
   if (!env?.STORE) return undefined;
-  return env.STORE.get(env.STORE.idFromName(DEMO_WORKSPACE_ID));
+  return env.STORE.get(env.STORE.idFromName(DEFAULT_WORKSPACE_ID));
 }
 
 export class AttendanceStore {
@@ -773,7 +781,7 @@ export class AttendanceStore {
         occurredAt: string;
         riskFlags: string[];
       }>();
-      const employee = demoEmployees.find((item) => item.id === body.input.employeeId);
+      const employee = seedEmployees.find((item) => item.id === body.input.employeeId);
       if (!employee) return Response.json({ ok: false, reason: "직원을 찾을 수 없습니다." });
 
       const key = `consumption:${body.input.qrNonceHash}`;
